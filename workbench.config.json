@@ -1,0 +1,23 @@
+{
+  "targetUrl": "https://example.com/",
+  "devServer": {
+    "host": "127.0.0.1",
+    "port": 8890
+  },
+  "browser": {
+    "cdpPort": 9222,
+    "agentSession": "browser-plugin-workbench",
+    "centCdpSkill": ""
+  },
+  "userscript": {
+    "enabled": true,
+    "nameSuffix": " [Workbench Dev]",
+    "namespaceSuffix": ".workbench-dev",
+    "sourcePath": "targets/userscript/main.user.js",
+    "metadataMode": "inherit"
+  },
+  "chromeExtension": {
+    "enabled": false,
+    "path": "targets/chrome-extension"
+  }
+}
