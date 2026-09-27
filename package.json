@@ -1,9 +1,13 @@
 {
   "name": "browser-plugin-workbench",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "AI-friendly local debugging workbench for Userscripts with reserved Chrome Extension support",
+  "description": "Small local workbench that prepares real browser-plugin development environments for AI",
+  "bin": {
+    "bpw": "bin/bpw.js"
+  },
   "scripts": {
+    "bpw": "node bin/bpw.js",
     "prepare:userscript": "node tools/generate-userscript-loader.js",
     "dev": "node tools/dev-server.js",
     "dev:start": "node tools/dev-server-control.js start",
@@ -12,7 +16,7 @@
     "browser": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/start-browser.ps1",
     "browser:verify": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/verify-browser.ps1",
     "check": "node tools/selftest.js",
-    "test": "node tools/generate-userscript-loader.js && node tools/smoke-test.js"
+    "test": "node tools/generate-userscript-loader.js && node tools/smoke-test.js && node tools/cli-test.js"
   },
   "engines": {
     "node": ">=20"

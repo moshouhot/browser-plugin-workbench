@@ -1,19 +1,11 @@
 const fs = require("node:fs");
 const path = require("node:path");
-
-const ROOT = path.resolve(__dirname, "..");
-const CONFIG_PATH = path.join(ROOT, "workbench.config.json");
+const { ROOT, loadConfig, resolveSourcePath } = require("./config");
 const RUNTIME_DIR = path.join(ROOT, "runtime");
 const OUTPUT_PATH = path.join(RUNTIME_DIR, "WorkbenchDev.user.js");
 
 function readConfig() {
-    return JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
-}
-
-function resolveSourcePath(config) {
-    const raw = config.userscript?.sourcePath || config.userscript?.entry;
-    if (!raw) throw new Error("userscript.sourcePath or userscript.entry is required");
-    return path.isAbsolute(raw) ? path.normalize(raw) : path.resolve(ROOT, raw);
+    return loadConfig();
 }
 
 function readSource(config) {
@@ -135,12 +127,10 @@ function buildLoader(config) {
                 console.error("[BrowserPluginWorkbench] userscript execution failed", error);
             }
         },
-        onerror(error) {
-            console.error("[BrowserPluginWorkbench] cannot reach local dev server", error);
-        },
-        ontimeout() {
-            console.error("[BrowserPluginWorkbench] local dev server timeout", url);
-        }
+        // The loader is intentionally safe to leave installed. When BPW is
+        // stopped, localhost is unavailable and normal browsing stays quiet.
+        onerror() {},
+        ontimeout() {}
     });
 })();
 `;

@@ -1,98 +1,154 @@
 # Browser Plugin Workbench
 
-一个面向 AI + 真机浏览器的本地调试工作台。
+一个给强 AI 使用的、小而美的真实浏览器插件开发工作台。
 
-第一版重点支持 **Userscript / 油猴脚本**：
-
-- 本地源码开发；
-- 自动生成 Violentmonkey/Tampermonkey 开发 Loader；
-- `127.0.0.1` 本地 dev server；
-- 修改源码后刷新目标网页即可加载最新代码；
-- 通过 `cent-cdp-browser` 使用日常 Cent Profile 启动 CDP；
-- AI 可用 CDP 读取 DOM、Console、Network、执行 JS、点击和验收；
-- Chrome Extension 预留标准目录和配置位，暂不实现自动 reload/build。
-
-## 快速开始
-
-1. 修改 `workbench.config.json`：
-   - `targetUrl`：真实调试页面；
-   - `userscript.sourcePath`：真实 `.user.js` 路径，可以是绝对路径；
-   - `browser.centCdpSkill`：可留空并通过环境变量 `CENT_CDP_SKILL` 指向本机 `cent-cdp-browser` Skill。
-2. 生成开发 Loader：
-
-```bat
-npm run prepare:userscript
-```
-
-3. 把生成的 `runtime\WorkbenchDev.user.js` 安装到 Violentmonkey/Tampermonkey，一次即可。
-4. 启动本地开发服务：
-
-```bat
-npm run dev:start
-```
-
-人工开发时也可以用前台模式 `npm run dev`。AI 调试默认用 `dev:start`，避免本地桥回收命令 session 后 8890 跟着消失。
-
-5. 启动/复用日常 Cent 的 CDP 模式：
-
-```bat
-npm run browser
-```
-
-这一步会为工作台创建一个独立标签页，并用 `agent-browser --pin-tab` 锁定它；不会拿已有 ChatGPT/其他网页标签充当验收目标。
-
-6. 验证 AI 能连接：
-
-```bat
-npm run browser:verify
-```
-
-之后开发循环就是：
+BPW 不负责替 AI 分析 DOM、Console、Network，也不做通用测试框架。它只负责把真实开发现场准备好：
 
 ```text
-修改 userscript.sourcePath 指向的真实 .user.js
--> 保存
--> 刷新目标网页
--> AI 通过 CDP 验证
+真实 .user.js
+-> Dev Loader + localhost source server
+-> 日常 Cent Profile + CDP
+-> 专属 target tab
+-> AI 直接使用 agent-browser 调试
 ```
 
-## 目录
+## 核心理念
+
+> AI 负责判断，BPW 负责机械且容易出错的环境搭桥。
+
+BPW 优先复用：
+
+- `cent-cdp-browser`：启动/复用日常 Cent Profile 和 CDP；
+- `agent-browser`：DOM、Console、Network、点击、JS、截图、刷新等浏览器操作；
+- Violentmonkey：Userscript 运行环境。
+
+BPW 不重复实现这些能力。
+
+## CLI
+
+V0.2 只有 4 个公开命令：
 
 ```text
-BrowserPluginWorkbench/
-├─ workbench.config.json
-├─ package.json
-├─ targets/
-│  ├─ userscript/
-│  │  └─ main.user.js
-│  └─ chrome-extension/
-│     ├─ README.md
-│     └─ manifest.json
-├─ templates/
-│  └─ dev-loader.template.user.js
-├─ runtime/                 # 自动生成，不提交
-├─ tools/
-│  ├─ dev-server.js
-│  ├─ generate-userscript-loader.js
-│  ├─ start-browser.ps1
-│  ├─ verify-browser.ps1
-│  ├─ selftest.js
-│  └─ smoke-test.js
-└─ docs/
-   ├─ AI_DEBUG_GUIDE.md
-   └─ ARCHITECTURE.md
+bpw doctor
+bpw start
+bpw status
+bpw stop
 ```
 
-## 设计原则
+本地仓库可直接运行：
 
-- 先 Userscript MVP，不一次性引入 Vite/TypeScript/Playwright。
-- 浏览器 Profile/CDP 启动不在本项目重复实现，优先复用 `cent-cdp-browser` Skill。
-- 真机证据优先于静态猜测。
-- 普通网页脚本改动必须先有复现，再做最小修复。
-- Chrome 扩展后续接入时沿用同一套 CDP 真机验收，不重新造浏览器控制层。
+```bat
+npm run bpw -- doctor
+```
 
-详细规则见 `docs/AI_DEBUG_GUIDE.md`。
+也可以在仓库执行一次：
 
-## 已验证案例
+```bat
+npm link
+```
 
-V0.1 已使用真实的大型 Userscript **My Prompt** 在 Cent Browser + Violentmonkey + ChatGPT 上完成真机验证：工作台直接服务原始 `.user.js`，Dev Loader 继承脚本元数据，通过 CDP 验证脚本实际注入后的 DOM 变化。详见 `docs/MY_PROMPT_CASE_STUDY.md`。
+之后直接使用：
+
+```bat
+bpw doctor
+```
+
+## 开始调试现有 Userscript
+
+例如：
+
+```bat
+bpw start --source "D:\project\foo.user.js" --url "https://target.example/"
+```
+
+BPW 会：
+
+1. 读取真实 `.user.js`；
+2. 生成独立 Dev Loader；
+3. 启动 `127.0.0.1` source server；
+4. 调用 `cent-cdp-browser`；
+5. 用 `agent-browser` 创建并 pin 一个专属 target；
+6. 返回 CDP、session、source、loader 等信息。
+
+然后 AI 不再通过 BPW 绕一层，而是直接使用：
+
+```text
+agent-browser + 返回的 session/CDP
+```
+
+去完成刷新、DOM 检查、Console/Network 分析、点击、JS、截图以及针对当前 bug 的验证。
+
+## 第一次使用 Dev Loader
+
+生成位置：
+
+```text
+runtime\WorkbenchDev.user.js
+```
+
+把它安装进 Violentmonkey/Tampermonkey 一次即可。
+
+Loader 继承原脚本需要的 Userscript metadata，并使用独立开发身份，不覆盖正式脚本。BPW 停止后本地 server 不存在时，Loader 会安静地跳过，不在正常浏览时刷连接错误。
+
+## 本机配置
+
+公开的 `workbench.config.json` 只提供通用默认值，不保存私人机器路径。
+
+本机 `cent-cdp-browser` 路径使用环境变量：
+
+```bat
+set CENT_CDP_SKILL=F:\path\to\cent-cdp-browser
+```
+
+常用临时覆盖：
+
+```text
+BPW_SOURCE
+BPW_TARGET_URL
+BPW_DEV_PORT
+BPW_CDP_PORT
+BPW_AGENT_SESSION
+CENT_CDP_SKILL
+```
+
+CLI 的 `--source` / `--url` 优先级高于配置文件。
+
+## 查看状态与结束
+
+```bat
+bpw status
+bpw stop
+```
+
+`stop` 只停止经过身份验证的 BPW source server，并删除 BPW 自己的 session state。
+
+它**不会**杀掉 Cent，也不会清 Profile/Cookie，更不会操作其他浏览器进程。
+
+## BPW 明确不做
+
+- `bpw inspect / console / network / verify`；
+- 自己实现 CDP/browser automation；
+- 通用 assertion/测试 DSL；
+- GUI；
+- MCP server；
+- 数据库/daemon/cloud；
+- Chrome Extension 构建框架；
+- AI bug diagnosis。
+
+这些要么交给强 AI，要么直接复用成熟工具。
+
+## 验证
+
+```bat
+npm run check
+npm test
+```
+
+真实浏览器验收仍以外部 Userscript + 日常 Cent + Violentmonkey + 真实目标站点为准。
+
+详细设计边界见：
+
+- `PRD.md`
+- `DESIGN.md`
+- `IMPLEMENTATION_PLAN.md`
+- `ACCEPTANCE.md`

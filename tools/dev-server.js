@@ -1,14 +1,15 @@
 const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
+const { ROOT, loadConfig, resolveSourcePath } = require("./config");
 
-const ROOT = path.resolve(__dirname, "..");
-const CONFIG = JSON.parse(fs.readFileSync(path.join(ROOT, "workbench.config.json"), "utf8"));
+const CONFIG = loadConfig();
 const HOST = CONFIG.devServer?.host || "127.0.0.1";
 const PORT = Number(CONFIG.devServer?.port || 8890);
 const SOURCE_RAW = CONFIG.userscript?.sourcePath || CONFIG.userscript?.entry || "";
-const ENTRY = path.isAbsolute(SOURCE_RAW) ? path.normalize(SOURCE_RAW) : path.resolve(ROOT, SOURCE_RAW);
+const ENTRY = resolveSourcePath(CONFIG);
 const LOADER = path.join(ROOT, "runtime", "WorkbenchDev.user.js");
+const APP_ID = "browser-plugin-workbench";
 
 if (!SOURCE_RAW || !fs.existsSync(ENTRY)) {
     throw new Error(`userscript source not found: ${ENTRY}`);
@@ -55,7 +56,7 @@ const server = http.createServer((req, res) => {
         return;
     }
     if (url.pathname === "/healthz") {
-        send(res, 200, JSON.stringify({ ok: true, source: ENTRY }), "application/json; charset=utf-8", headOnly);
+        send(res, 200, JSON.stringify({ ok: true, app: APP_ID, pid: process.pid, source: ENTRY, port: PORT }), "application/json; charset=utf-8", headOnly);
         return;
     }
 

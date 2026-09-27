@@ -35,6 +35,8 @@ function main() {
     assert(metadata.some((line) => line.includes("@match") && line.includes("example.com")), "example source metadata missing example.com match");
 
     for (const relative of [
+        "bin/bpw.js",
+        "tools/config.js",
         "tools/dev-server.js",
         "tools/start-browser.ps1",
         "tools/verify-browser.ps1",

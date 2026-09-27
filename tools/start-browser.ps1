@@ -9,8 +9,11 @@ $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 $Config = Get-Content -LiteralPath (Join-Path $Root "workbench.config.json") -Raw -Encoding UTF8 | ConvertFrom-Json
 
+if (-not $Url -and $env:BPW_TARGET_URL) { $Url = [string]$env:BPW_TARGET_URL }
 if (-not $Url) { $Url = [string]$Config.targetUrl }
+if ($Port -le 0 -and $env:BPW_CDP_PORT) { $Port = [int]$env:BPW_CDP_PORT }
 if ($Port -le 0) { $Port = [int]$Config.browser.cdpPort }
+if (-not $Session -and $env:BPW_AGENT_SESSION) { $Session = [string]$env:BPW_AGENT_SESSION }
 if (-not $Session) { $Session = [string]$Config.browser.agentSession }
 if (-not $Session) { $Session = "browser-plugin-workbench" }
 

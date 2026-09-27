@@ -1,46 +1,33 @@
 # Architecture
 
-## V0.1
+BPW V0.2 deliberately keeps the architecture small:
 
 ```text
-                     +--------------------------+
-                     | cent-cdp-browser Skill   |
-                     | daily Cent + CDP         |
-                     +------------+-------------+
-                                  |
-                                  v
-+------------------+      +-------+-------+
-| source userscript| ---> | target website |
-+--------+---------+      +-------+-------+
-         ^                        |
-         |                        v
-+--------+---------+      +-------+-------+
-| local dev server |      | AI CDP attach |
-| 127.0.0.1:8890   |      | agent-browser |
-+--------+---------+      +---------------+
-         ^
-         |
-+--------+---------+
-| thin dev loader  |
-| Violentmonkey    |
-+------------------+
+AI / browser-plugin-workbench Skill
+                |
+                v
+              bpw CLI
+                |
+     +----------+----------+
+     |                     |
+Userscript loader      local source server
+                           |
+     +---------------------+
+     |
+     +--> cent-cdp-browser --> Cent/Profile/CDP
+     |
+     +--> agent-browser --> pinned workbench tab
 ```
 
-### Userscript
+After `bpw start`, browser debugging goes directly through `agent-browser`.
 
-完整实现。
+BPW intentionally does not provide its own DOM, Console, Network, screenshot, assertion, or AI reasoning layer.
 
-### Chrome Extension
+## Why this shape
 
-只预留目标目录和配置。未来接入 reload/build/service worker 调试时，不修改浏览器控制层。
+- AI already handles contextual diagnosis and verification well.
+- `agent-browser` already exposes browser operations.
+- `cent-cdp-browser` already owns Cent/Profile/CDP mechanics.
+- BPW adds value only where local Userscript/environment glue would otherwise be repeated and error-prone.
 
-## Why no framework yet
-
-第一版不引入 Vite/TypeScript/Playwright，因为当前主要问题是浏览器插件的真实运行与调试闭环，而不是构建系统。
-
-当出现以下任一情况再升级：
-
-- 多模块源码维护明显困难；
-- 需要 TypeScript 类型约束；
-- Chrome Extension 正式启用；
-- 自动回归用例数量足以支撑 Playwright/测试框架成本。
+Add another architectural layer only after a real repeated problem proves it is needed.
