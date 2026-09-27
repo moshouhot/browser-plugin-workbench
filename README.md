@@ -35,22 +35,49 @@ bpw status
 bpw stop
 ```
 
-本地仓库可直接运行：
+### 检测是否已安装 CLI
+
+Windows 下先运行：
 
 ```bat
-npm run bpw -- doctor
+where.exe bpw
 ```
 
-也可以在仓库执行一次：
+如果能找到 `bpw`，继续：
+
+```bat
+bpw doctor
+```
+
+### 安装 / 链接 CLI
+
+如果你已经在 BrowserPluginWorkbench 源码仓库里，只需要：
 
 ```bat
 npm link
 ```
 
-之后直接使用：
+如果本机还没有源码仓库，当前推荐安装方式是：
 
 ```bat
+git clone https://github.com/moshouhot/browser-plugin-workbench.git
+cd browser-plugin-workbench
+npm link
+```
+
+然后确认：
+
+```bat
+where.exe bpw
 bpw doctor
+```
+
+目前不要假设存在正式 npm registry 包；当前支持的 bootstrap 是 **GitHub checkout + `npm link`**。
+
+如果只想在当前源码仓库临时运行、不做全局 link，也可以：
+
+```bat
+npm run bpw -- doctor
 ```
 
 ## AI Skill（推荐）
