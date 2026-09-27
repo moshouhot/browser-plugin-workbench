@@ -51,18 +51,10 @@ bpw doctor
 
 ### 安装 / 链接 CLI
 
-如果你已经在 BrowserPluginWorkbench 源码仓库里，只需要：
+普通使用 / AI 自动安装，推荐安装已经验收过的稳定 Tag：
 
 ```bat
-npm link
-```
-
-如果本机还没有源码仓库，当前推荐安装方式是：
-
-```bat
-git clone https://github.com/moshouhot/browser-plugin-workbench.git
-cd browser-plugin-workbench
-npm link
+npm install -g github:moshouhot/browser-plugin-workbench#v0.2.0
 ```
 
 然后确认：
@@ -72,7 +64,40 @@ where.exe bpw
 bpw doctor
 ```
 
-目前不要假设存在正式 npm registry 包；当前支持的 bootstrap 是 **GitHub checkout + `npm link`**。
+如果你是在**开发 BPW 本身**，才使用源码仓库 + `npm link`。如果已经在 BrowserPluginWorkbench 源码仓库里：
+
+```bat
+npm link
+```
+
+或者先克隆开发仓库：
+
+```bat
+git clone https://github.com/moshouhot/browser-plugin-workbench.git
+cd browser-plugin-workbench
+npm link
+```
+
+开发模式同样用下面命令确认：
+
+```bat
+where.exe bpw
+bpw doctor
+```
+
+目前没有发布 npm Registry 包，因此不要使用 `npm install -g browser-plugin-workbench`。普通安装以 **GitHub Tag + npm** 为准，源码 clone + `npm link` 只保留给开发 BPW 本身。
+
+升级到后续稳定版时，仍使用相同形式，例如：
+
+```bat
+npm install -g github:moshouhot/browser-plugin-workbench#v0.2.1
+```
+
+卸载：
+
+```bat
+npm uninstall -g browser-plugin-workbench
+```
 
 如果只想在当前源码仓库临时运行、不做全局 link，也可以：
 

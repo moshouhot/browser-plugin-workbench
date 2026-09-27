@@ -3,6 +3,25 @@
   "version": "0.2.0",
   "private": true,
   "description": "Small local workbench that prepares real browser-plugin development environments for AI",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/moshouhot/browser-plugin-workbench.git"
+  },
+  "homepage": "https://github.com/moshouhot/browser-plugin-workbench#readme",
+  "bugs": {
+    "url": "https://github.com/moshouhot/browser-plugin-workbench/issues"
+  },
+  "files": [
+    "bin/bpw.js",
+    "tools/config.js",
+    "tools/dev-server-control.js",
+    "tools/dev-server.js",
+    "tools/generate-userscript-loader.js",
+    "tools/start-browser.ps1",
+    "targets/userscript/main.user.js",
+    "workbench.config.json"
+  ],
   "bin": {
     "bpw": "bin/bpw.js"
   },
