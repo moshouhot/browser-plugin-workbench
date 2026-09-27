@@ -9,6 +9,7 @@ const CONTROL = path.join(ROOT, "tools", "dev-server-control.js");
 const LOADER = path.join(ROOT, "tools", "generate-userscript-loader.js");
 const RUNTIME = path.join(ROOT, "runtime");
 const SERVER_STATE = path.join(RUNTIME, "dev-server.json");
+const BROWSER_STATE = path.join(RUNTIME, "browser-session.json");
 
 function assert(condition, message) {
     if (!condition) throw new Error(message);
@@ -34,6 +35,56 @@ function randomPort() {
 
 function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
+function testPowerShellUtf8Bridge() {
+    if (process.platform !== "win32") return;
+
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), `bpw-utf8-${process.pid}-`));
+    const skillRoot = path.join(tempRoot, "cent-cdp-browser");
+    const scriptsDir = path.join(skillRoot, "scripts");
+    const fakeBin = path.join(tempRoot, "bin");
+    const previousBrowserState = fs.existsSync(BROWSER_STATE) ? fs.readFileSync(BROWSER_STATE) : null;
+
+    fs.mkdirSync(scriptsDir, { recursive: true });
+    fs.mkdirSync(fakeBin, { recursive: true });
+    fs.writeFileSync(path.join(scriptsDir, "start_cent_cdp.py"), [
+        "import json",
+        "print(json.dumps({",
+        "    'ok': True,",
+        "    'action': 'reuse',",
+        "    'cdp_port': 9222,",
+        "    'browser': '浏览器.exe',",
+        "    'user_data': '用户数据',",
+        "    'profile': '默认',",
+        "    'pages': [{'title': '暴力猴'}]",
+        "}, ensure_ascii=False))"
+    ].join("\n"), "utf8");
+    fs.writeFileSync(path.join(fakeBin, "npx.cmd"), "@echo off\r\necho https://example.com/\r\nexit /b 0\r\n", "utf8");
+
+    const env = {
+        ...process.env,
+        CENT_CDP_SKILL: skillRoot,
+        PYTHONUTF8: "1",
+        PATH: `${fakeBin};${process.env.PATH || ""}`
+    };
+    delete env.PYTHONIOENCODING;
+
+    try {
+        const output = run("powershell.exe", [
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", path.join(ROOT, "tools", "start-browser.ps1"),
+            "-Url", "https://example.com/",
+            "-Port", "9222",
+            "-Session", "bpw-utf8-test"
+        ], env);
+        assert(output.includes("TARGET TAB READY: https://example.com/"), "PowerShell/Python UTF-8 bridge failed on non-ASCII JSON");
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+        if (previousBrowserState) fs.writeFileSync(BROWSER_STATE, previousBrowserState);
+        else fs.rmSync(BROWSER_STATE, { force: true });
+    }
+}
+
 async function main() {
     const help = run(process.execPath, [BPW, "--help"]);
     assert(help.includes("bpw doctor"), "CLI help missing doctor");
@@ -42,6 +93,8 @@ async function main() {
     const doctor = run(process.execPath, [BPW, "doctor", "--json"]);
     const doctorJson = JSON.parse(doctor);
     assert(["READY", "READY_WITH_WARNING"].includes(doctorJson.status), "doctor should accept bundled example");
+
+    testPowerShellUtf8Bridge();
 
     const override = tempUserscript("Override Source");
     const overrideEnv = { ...process.env, BPW_SOURCE: override };

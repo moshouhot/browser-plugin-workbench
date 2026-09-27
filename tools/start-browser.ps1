@@ -41,15 +41,36 @@ if (-not (Test-Path -LiteralPath $Starter)) {
     throw "cent-cdp-browser starter not found: $Starter"
 }
 
-$StarterOutput = @(& python $Starter --url $Url --port $Port)
-$StarterExitCode = $LASTEXITCODE
-$StarterOutput | ForEach-Object { Write-Host $_ }
+$PythonInfo = New-Object System.Diagnostics.ProcessStartInfo
+$PythonInfo.FileName = "python"
+$PythonInfo.Arguments = '"' + $Starter + '" --url "' + $Url + '" --port ' + $Port
+$PythonInfo.UseShellExecute = $false
+$PythonInfo.CreateNoWindow = $true
+$PythonInfo.RedirectStandardOutput = $true
+$PythonInfo.RedirectStandardError = $true
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+$PythonInfo.StandardOutputEncoding = $Utf8NoBom
+$PythonInfo.StandardErrorEncoding = $Utf8NoBom
+$PythonInfo.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8"
+
+$PythonProcess = New-Object System.Diagnostics.Process
+$PythonProcess.StartInfo = $PythonInfo
+if (-not $PythonProcess.Start()) {
+    throw "cent-cdp-browser python process could not start"
+}
+$StarterText = $PythonProcess.StandardOutput.ReadToEnd().Trim()
+$StarterError = $PythonProcess.StandardError.ReadToEnd().Trim()
+$PythonProcess.WaitForExit()
+$StarterExitCode = $PythonProcess.ExitCode
+$PythonProcess.Dispose()
+
+if ($StarterText) { Write-Host $StarterText }
+if ($StarterError) { Write-Host $StarterError }
 
 if ($StarterExitCode -ne 0) {
     throw "cent-cdp-browser failed with exit code $StarterExitCode"
 }
 
-$StarterText = ($StarterOutput -join "`n").Trim()
 try {
     $StarterResult = $StarterText | ConvertFrom-Json
 } catch {
