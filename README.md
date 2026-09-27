@@ -53,6 +53,26 @@ npm link
 bpw doctor
 ```
 
+## AI Skill（推荐）
+
+CLI 可以独立使用；给 Codex / ChatGPT 这类 AI 使用时，推荐再安装薄 Skill：
+
+```text
+browser-plugin-workbench
+```
+
+它只负责告诉 AI 正确工作流：
+
+```text
+$browser-plugin-workbench
+-> bpw doctor
+-> bpw start --source ... --url ...
+-> AI 直接使用 agent-browser 调试/修改/验证
+-> bpw stop
+```
+
+Skill 不包含 BPW 的第二份实现，CLI 才是唯一执行层。
+
 ## 开始调试现有 Userscript
 
 例如：
