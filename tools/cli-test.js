@@ -116,6 +116,14 @@ async function main() {
         fs.rmSync(requestFile, { force: true });
     }
 
+    fs.writeFileSync(requestFile, JSON.stringify({ source: requestSource, url: "https://example.com/", manager: "tampermonkey" }), "utf8");
+    try {
+        const requestOutput = run(process.execPath, [BPW, "start", "--request", requestFile], process.env, 1);
+        assert(requestOutput.includes(`userscript source not found: ${requestSource}`), "request-file manager support changed start preflight ordering");
+    } finally {
+        fs.rmSync(requestFile, { force: true });
+    }
+
     testPowerShellUtf8Bridge();
 
     fs.mkdirSync(RUNTIME, { recursive: true });

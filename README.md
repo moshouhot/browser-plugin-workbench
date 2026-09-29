@@ -20,7 +20,7 @@ BPW 优先复用：
 
 - `cent-cdp-browser`：启动/复用日常 Cent Profile 和 CDP；
 - `agent-browser`：DOM、Console、Network、点击、JS、截图、刷新等浏览器操作；
-- Violentmonkey：Userscript 运行环境。
+- Violentmonkey / Tampermonkey：Userscript 运行环境。
 
 BPW 不重复实现这些能力。
 
@@ -134,7 +134,8 @@ AI/Codex 默认使用 request 文件，避免把目标 URL 直接暴露在命令
 ```json
 {
   "source": "D:\\project\\foo.user.js",
-  "url": "https://target.example/"
+  "url": "https://target.example/",
+  "manager": "violentmonkey"
 }
 ```
 
@@ -144,6 +145,16 @@ bpw start --request runtime\start-request.json
 
 人工终端仍兼容 `bpw start --source "..." --url "..."`，但自动化/Codex 不应把字面 URL 放进 `bpw start` 命令行；部分命令执行策略会在 CreateProcess 前误拦这种命令形状。
 
+`manager` 默认是 `violentmonkey`。同一 Profile 同时安装多个 Userscript 管理器时不要自动猜测；要调试 Tampermonkey 时显式使用：
+
+```json
+{
+  "source": "D:\\project\\foo.user.js",
+  "url": "https://target.example/",
+  "manager": "tampermonkey"
+}
+```
+
 BPW 会：
 
 1. 读取真实 `.user.js`；
@@ -151,11 +162,32 @@ BPW 会：
 3. 启动 `127.0.0.1` source server；
 4. 调用 `cent-cdp-browser`；
 5. 通过 Chrome CDP 直接创建或复用专属 target；
-6. 调用 Violentmonkey 自身后台命令安装/更新 Dev Loader、切换正式脚本与 Dev Loader；如果后台接口不可用，立即报错停止，不回退到管理页自动化；
+6. 按显式 manager 执行 Userscript 生命周期：Violentmonkey 使用其后台 API；Tampermonkey 使用官方 External userscripts API 做源码 CRUD，仅用内部 `loadTree` / `modifyScriptOptions` 补启停能力；任一所需能力不可用都立即报错，不回退管理页 UI；
 7. 通过 CDP 直接刷新目标页；
 8. 返回 `targetId`、`targetCdpUrl`、CDP、session、source、loader 等信息。
 
 默认要求当前 Cent Profile 中可通过 CDP 访问 Violentmonkey。BPW 在修改脚本状态前保存正式脚本源码和原启用状态。调试时只修改原始 `.user.js` 文件；Dev Loader 会从本地服务读取最新文件。
+
+### Tampermonkey 后端
+
+Tampermonkey 必须显式选择 `manager: "tampermonkey"`。BPW 不使用 Dashboard UI 自动化，也不调用私有 `saveScript` 来补官方能力缺口：
+
+- 源码读取/更新/创建/删除：Tampermonkey Editors 转发的官方 External `userscripts` API（`list/get/patch/put/delete`）；
+- 脚本启停：Tampermonkey 自己扩展页上下文中的 `loadTree` + `modifyScriptOptions`；
+- 启动前会同时探测两条通道，缺少任一能力就 fail closed。
+
+Tampermonkey Editors 不要求用户手工安装。BPW 的 `ensureEditors()` 会：
+
+1. 优先复用当前 Profile 已经可用的官方 Tampermonkey Editors；
+2. 如果不存在，则从 Google 官方扩展更新服务下载 Tampermonkey Editors CRX；
+3. 验证 CRX3 签名，并确认签名公钥派生出的扩展 ID 是官方白名单 ID `lieodnapokbjkkdkhdljlllmgkmdokcm`；
+4. 解包到 `runtime/managed/tampermonkey-editors/`，把 CRX 自带公开公钥写入 `manifest.key`，使 unpacked companion 保持同一个官方 ID；
+5. 由 `cent-cdp-browser` 在 Cent 启动时加载该 managed companion；
+6. 再验证实际运行时 extension ID，之后才允许 External API 继续。
+
+如果 Cent 已经在运行且本次启动参数中没有 managed Editors，Chrome 不能热加载新的 `--load-extension`。这种情况下 `cent-cdp-browser` 会沿用它原有的受控重启流程，让 Editors 在浏览器启动阶段加载；不要求用户去商店安装扩展。
+
+完整自动生命周期仍要求 Tampermonkey External API 实际声明 `list/get/patch/put/delete`。Tampermonkey 5.5.0 只声明 `list/get/patch`，即使 Editors 已自动准备完成也会安全拒绝源码 CRUD；不会偷偷改用内部 `saveScript`。
 
 若使用其他 Userscript 管理器，可显式运行 `bpw start ... --manual-loader`，沿用手动安装 Loader 的流程。该模式不支持 `bpw finish` 自动回写。
 
@@ -194,6 +226,7 @@ set CENT_CDP_SKILL=F:\path\to\cent-cdp-browser
 ```text
 BPW_SOURCE
 BPW_TARGET_URL
+BPW_USERSCRIPT_MANAGER
 BPW_DEV_PORT
 BPW_CDP_PORT
 BPW_AGENT_SESSION
@@ -210,7 +243,7 @@ bpw finish
 bpw stop
 ```
 
-`finish` 将当前源文件写入原有 Violentmonkey 正式脚本，核对脚本 ID 和源码，启用正式版、关闭 Dev Loader，刷新目标页并停止本地服务。若正式脚本在调试期间被其他操作改动，BPW 拒绝覆盖，并保留会话供处理。
+`finish` 将当前源文件写回所选 Userscript 管理器中的正式脚本，核对脚本 ID 和源码，启用正式版、关闭 Dev Loader，刷新目标页并停止本地服务。若正式脚本在调试期间被其他操作改动，BPW 拒绝覆盖，并保留会话供处理。
 
 `stop` 放弃回写，关闭 Dev Loader，恢复正式脚本调试开始前的启用状态，刷新目标页并停止本地服务。恢复失败时保留会话，可再次运行 `bpw stop`。
 

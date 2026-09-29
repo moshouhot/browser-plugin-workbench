@@ -18,6 +18,7 @@ function main() {
     assert(Number.isInteger(Number(config.devServer.port)), "devServer.port must be numeric");
     assert(Number.isInteger(Number(config.browser.cdpPort)), "browser.cdpPort must be numeric");
     assert(Boolean(config.browser.agentSession), "browser.agentSession is required");
+    assert(["violentmonkey", "tampermonkey"].includes(config.userscript.manager), "userscript.manager must be violentmonkey or tampermonkey");
     assert(config.chromeExtension && Object.hasOwn(config.chromeExtension, "enabled"), "chromeExtension reservation missing");
 
     const loader = buildLoader(config);
@@ -38,6 +39,7 @@ function main() {
         "bin/bpw.js",
         "tools/config.js",
         "tools/dev-server.js",
+        "tools/tampermonkey.js",
         "tools/start-browser.ps1",
         "tools/verify-browser.ps1",
         "targets/chrome-extension/manifest.json",

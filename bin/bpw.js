@@ -8,6 +8,7 @@ const { spawnSync } = require("node:child_process");
 const { ROOT, loadConfig, resolveSourcePath } = require("../tools/config");
 const { metadataIdentity } = require("../tools/source-identity");
 const violentmonkey = require("../tools/violentmonkey");
+const tampermonkey = require("../tools/tampermonkey");
 
 const RUNTIME = path.join(ROOT, "runtime");
 const SESSION_PATH = path.join(RUNTIME, "session.json");
@@ -21,7 +22,7 @@ function usage() {
 
 Usage:
   bpw doctor [--json]
-  bpw start [--request <json>] [--source <file>] [--url <url>] [--manual-loader] [--json]
+  bpw start [--request <json>] [--source <file>] [--url <url>] [--manager <violentmonkey|tampermonkey>] [--manual-loader] [--json]
   bpw status [--json]
   bpw finish [--json]
   bpw stop [--json]
@@ -29,12 +30,28 @@ Usage:
 AI should use agent-browser directly after 'bpw start' for page debugging.`;
 }
 
-async function tryFastBrowserReuse(config, targetUrl) {
+function normalizeManager(value) {
+    const manager = String(value || "violentmonkey").trim().toLowerCase();
+    if (!["violentmonkey", "tampermonkey"].includes(manager)) {
+        throw new Error(`unsupported userscript manager: ${value}. Expected violentmonkey or tampermonkey`);
+    }
+    return manager;
+}
+
+async function tryFastBrowserReuse(config, targetUrl, requiredExtensionId = null) {
     const cached = readJson(BROWSER_STATE);
     const port = Number(config.browser.cdpPort);
     if (!cached || Number(cached.cdpPort) !== port || !cached.browserWebSocketDebuggerUrl) return null;
     const version = await httpJson(`http://127.0.0.1:${port}/json/version`, 350);
     if (!version?.webSocketDebuggerUrl || version.webSocketDebuggerUrl !== cached.browserWebSocketDebuggerUrl) return null;
+    if (requiredExtensionId) {
+        try {
+            const editors = await tampermonkey.findEditorsExtension(port);
+            if (editors.extensionId !== requiredExtensionId) return null;
+        } catch {
+            return null;
+        }
+    }
     const browser = {
         ...cached,
         targetUrl,
@@ -45,9 +62,9 @@ async function tryFastBrowserReuse(config, targetUrl) {
     return browser;
 }
 
-async function bootstrapBrowser(config, env, targetUrl) {
+async function bootstrapBrowser(config, env, targetUrl, extensionRequirement = null) {
     if (process.platform !== "win32") throw new Error("V0.2 browser bootstrap currently requires Windows");
-    const reused = await tryFastBrowserReuse(config, targetUrl);
+    const reused = await tryFastBrowserReuse(config, targetUrl, extensionRequirement?.extensionId || null);
     if (reused) return reused;
     const centRoot = config.browser?.centCdpSkill || "";
     const starter = path.join(centRoot, "scripts", "start_cent_cdp.py");
@@ -55,11 +72,14 @@ async function bootstrapBrowser(config, env, targetUrl) {
         throw new Error(`cent-cdp-browser starter not found: ${starter}`);
     }
     const pythonEnv = { ...env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" };
-    const result = spawnSync("python", [
+    const args = [
         starter,
         "--url", targetUrl,
         "--port", String(config.browser.cdpPort)
-    ], {
+    ];
+    if (extensionRequirement?.path) args.push("--load-extension", extensionRequirement.path);
+    if (extensionRequirement?.extensionId) args.push("--required-extension-id", extensionRequirement.extensionId);
+    const result = spawnSync("python", args, {
         cwd: ROOT,
         env: pythonEnv,
         encoding: "utf8",
@@ -84,6 +104,9 @@ async function bootstrapBrowser(config, env, targetUrl) {
         browser: String(value.browser || ""),
         userData: String(value.user_data || ""),
         profile: String(value.profile || ""),
+        requiredExtensionId: String(value.required_extension_id || ""),
+        extensionSource: String(value.extension_source || ""),
+        loadExtension: String(value.load_extension || ""),
         browserWebSocketDebuggerUrl: version.webSocketDebuggerUrl,
         startedAt: new Date().toISOString()
     };
@@ -91,7 +114,11 @@ async function bootstrapBrowser(config, env, targetUrl) {
     return browser;
 }
 
-async function restoreVmSession(session) {
+async function restoreUserscriptSession(session) {
+    if (session?.tm) {
+        await tampermonkey.restore(session.cdpPort, session.tm);
+        return;
+    }
     if (!session?.vm) return;
     if (session.vm.transport !== "background-api") {
         throw new Error("this BPW session uses an unsupported legacy Violentmonkey UI transport; UI fallback is disabled");
@@ -107,7 +134,8 @@ async function reloadVmTarget(session) {
     await violentmonkey.reloadTargetById(session.cdpPort, session.targetId);
 }
 
-async function finishVmSession(session, sourceCode, originalCode) {
+async function finishUserscriptSession(session, sourceCode, originalCode) {
+    if (session?.tm) return tampermonkey.finish(session.cdpPort, session.tm, sourceCode, originalCode);
     if (session.vm.transport !== "background-api") {
         throw new Error("this BPW session uses an unsupported legacy Violentmonkey UI transport; UI fallback is disabled");
     }
@@ -137,6 +165,7 @@ function applyRequestOptions(command, options) {
     if (request.devPort != null) fromRequest["dev-port"] = String(request.devPort);
     if (request.cdpPort != null) fromRequest["cdp-port"] = String(request.cdpPort);
     if (request.session != null) fromRequest.session = String(request.session);
+    if (request.manager != null) fromRequest.manager = String(request.manager);
     if (request.manualLoader === true) fromRequest.manualLoader = true;
     return { ...fromRequest, ...options, request: requestPath };
 }
@@ -151,7 +180,7 @@ function parseArgs(argv) {
         const arg = argv[i];
         if (arg === "--json") options.json = true;
         else if (arg === "--manual-loader") options.manualLoader = true;
-        else if (["--request", "--source", "--url", "--dev-port", "--cdp-port", "--session"].includes(arg)) {
+        else if (["--request", "--source", "--url", "--dev-port", "--cdp-port", "--session", "--manager"].includes(arg)) {
             if (!argv[i + 1]) throw new Error(`${arg} requires a value`);
             options[arg.slice(2)] = argv[++i];
         } else if (arg === "--help" || arg === "-h") options.help = true;
@@ -325,17 +354,32 @@ async function start(options) {
     const config = loadConfig(env);
     const source = resolveSourcePath(config);
     const targetUrl = config.targetUrl;
+    const manager = normalizeManager(options.manager || config.userscript?.manager || "violentmonkey");
     if (!fs.existsSync(source)) throw new Error(`userscript source not found: ${source}`);
     if (!targetUrl) throw new Error("target URL is required");
     if (fs.existsSync(SESSION_PATH)) throw new Error("an existing BPW session must be finished or stopped before starting another");
     if (fs.existsSync(FORMAL_BACKUP)) throw new Error(`unresolved formal script backup exists: ${FORMAL_BACKUP}`);
     fs.mkdirSync(RUNTIME, { recursive: true });
+    let editorRequirement = null;
+    if (manager === "tampermonkey" && !options.manualLoader) {
+        try {
+            const activeEditors = await tampermonkey.findEditorsExtension(Number(config.browser.cdpPort));
+            editorRequirement = {
+                extensionId: activeEditors.extensionId,
+                version: activeEditors.version,
+                path: null,
+                source: "installed-active"
+            };
+        } catch {
+            editorRequirement = await tampermonkey.prepareManagedEditors();
+        }
+    }
     run(process.execPath, [path.join(ROOT, "tools", "generate-userscript-loader.js")], env, "loader generation");
     run(process.execPath, [path.join(ROOT, "tools", "dev-server-control.js"), "start"], env, "dev server start");
 
     let browser;
     try {
-        browser = await bootstrapBrowser(config, env, targetUrl);
+        browser = await bootstrapBrowser(config, env, targetUrl, editorRequirement);
     } catch (error) {
         run(process.execPath, [path.join(ROOT, "tools", "dev-server-control.js"), "stop"], env, "dev server cleanup");
         throw error;
@@ -351,6 +395,13 @@ async function start(options) {
         targetId: "",
         targetCdpUrl: "",
         browser: browser.browser || "",
+        editors: editorRequirement && {
+            extensionId: editorRequirement.extensionId,
+            version: editorRequirement.version,
+            source: browser.extensionSource || editorRequirement.source,
+            path: editorRequirement.path
+        },
+        manager,
         startedAt: new Date().toISOString()
     };
     try {
@@ -370,41 +421,57 @@ async function start(options) {
 
     if (!options.manualLoader) {
         try {
-            const extensionId = await violentmonkey.findExtensionId(session.cdpPort);
             const sourceCode = fs.readFileSync(source, "utf8");
             const loaderCode = fs.readFileSync(LOADER_PATH, "utf8");
             const identity = metadataIdentity(sourceCode);
             const loaderIdentity = metadataIdentity(loaderCode);
-            if (!await violentmonkey.hasBackgroundApi(session.cdpPort, extensionId)) {
-                throw new Error("Violentmonkey background API is unavailable; UI fallback is disabled");
+            if (manager === "tampermonkey") {
+                const prepared = await tampermonkey.prepare(session.cdpPort, sourceCode, loaderCode, identity, loaderIdentity);
+                if (prepared.formal) fs.writeFileSync(FORMAL_BACKUP, prepared.formal.code, { flag: "wx" });
+                session.tm = {
+                    ...prepared,
+                    sourceHash: sha256(sourceCode),
+                    formal: prepared.formal && {
+                        id: prepared.formal.id,
+                        path: prepared.formal.path,
+                        enabled: prepared.formal.enabled,
+                        codeHash: sha256(prepared.formal.code)
+                    }
+                };
+            } else {
+                const extensionId = await violentmonkey.findExtensionId(session.cdpPort);
+                if (!await violentmonkey.hasBackgroundApi(session.cdpPort, extensionId)) {
+                    throw new Error("Violentmonkey background API is unavailable; UI fallback is disabled");
+                }
+                const inspected = await violentmonkey.inspectBackground(session.cdpPort, extensionId, identity, loaderIdentity);
+                if (inspected.formal) fs.writeFileSync(FORMAL_BACKUP, inspected.formal.code, { flag: "wx" });
+                session.vm = {
+                    extensionId,
+                    transport: "background-api",
+                    stage: "preparing",
+                    identity,
+                    loaderIdentity,
+                    sourceHash: sha256(sourceCode),
+                    formal: inspected.formal && {
+                        id: inspected.formal.id,
+                        enabled: inspected.formal.enabled,
+                        codeHash: sha256(inspected.formal.code)
+                    },
+                    loader: inspected.loader && { id: inspected.loader.id, enabled: inspected.loader.enabled }
+                };
+                writeJson(SESSION_PATH, session);
+                const activated = await violentmonkey.activateBackground(session.cdpPort, extensionId, session.vm, loaderCode);
+                session.vm.loaderId = activated.loaderId;
+                session.vm.stage = "active";
             }
-            const inspected = await violentmonkey.inspectBackground(session.cdpPort, extensionId, identity, loaderIdentity);
-            if (inspected.formal) fs.writeFileSync(FORMAL_BACKUP, inspected.formal.code, { flag: "wx" });
-            session.vm = {
-                extensionId,
-                transport: "background-api",
-                stage: "preparing",
-                identity,
-                loaderIdentity,
-                sourceHash: sha256(sourceCode),
-                formal: inspected.formal && {
-                    id: inspected.formal.id,
-                    enabled: inspected.formal.enabled,
-                    codeHash: sha256(inspected.formal.code)
-                },
-                loader: inspected.loader && { id: inspected.loader.id, enabled: inspected.loader.enabled }
-            };
-            writeJson(SESSION_PATH, session);
-            const activated = await violentmonkey.activateBackground(session.cdpPort, extensionId, session.vm, loaderCode);
-            session.vm.loaderId = activated.loaderId;
-            session.vm.stage = "active";
             writeJson(SESSION_PATH, session);
             await reloadVmTarget(session);
         } catch (error) {
-            if (session.vm) {
-                try { await restoreVmSession(session); }
+            if (session.vm || session.tm) {
+                try { await restoreUserscriptSession(session); }
                 catch (restoreError) {
-                    session.vm.stage = "restore-needed";
+                    if (session.vm) session.vm.stage = "restore-needed";
+                    if (session.tm) session.tm.stage = "restore-needed";
                     writeJson(SESSION_PATH, session);
                     throw new Error(`${error.message}; automatic restoration failed: ${restoreError.message}. Run bpw stop to retry`);
                 }
@@ -436,7 +503,8 @@ async function status(options) {
     const server = await httpJson(`${session.devServer}/healthz`);
     const cdp = await httpJson(`http://127.0.0.1:${session.cdpPort}/json/version`);
     const sourceMatches = Boolean(server && server.app === "browser-plugin-workbench" && path.normalize(server.source || "") === path.normalize(session.source));
-    const lifecycleReady = !session.vm || (session.vm.stage === "active" && Boolean(cdp?.webSocketDebuggerUrl));
+    const lifecycle = session.tm || session.vm || null;
+    const lifecycleReady = !lifecycle || (lifecycle.stage === "active" && Boolean(cdp?.webSocketDebuggerUrl));
     const result = {
         status: sourceMatches && lifecycleReady ? "ACTIVE" : "DEGRADED",
         source: session.source,
@@ -450,38 +518,41 @@ async function status(options) {
         targetCdpUrl: session.targetCdpUrl,
         loader: session.loader
     };
+    result.manager = session.manager || (session.tm ? "tampermonkey" : "violentmonkey");
     if (session.vm) result.violentmonkey = { stage: session.vm.stage, formalId: session.vm.formal?.id || session.vm.formalId || null, loaderId: session.vm.loaderId || session.vm.loader?.id || null };
+    if (session.tm) result.tampermonkey = { stage: session.tm.stage, formalId: session.tm.formal?.id || session.tm.formalId || null, loaderId: session.tm.loader?.id || null, transport: session.tm.transport };
     emit(result, options.json);
     if (!sourceMatches || !lifecycleReady) process.exitCode = 1;
 }
 
 async function finish(options) {
     const session = readJson(SESSION_PATH);
-    if (!session?.vm) throw new Error("no active Violentmonkey lifecycle; use bpw start without --manual-loader");
-    if (session.vm.stage !== "promoted") {
-        if (session.vm.stage !== "active") throw new Error(`cannot finish session in stage ${session.vm.stage}`);
+    const lifecycle = session?.tm || session?.vm;
+    if (!lifecycle) throw new Error("no active Userscript lifecycle; use bpw start without --manual-loader");
+    if (lifecycle.stage !== "promoted") {
+        if (lifecycle.stage !== "active") throw new Error(`cannot finish session in stage ${lifecycle.stage}`);
         let backup = null;
-        if (session.vm.formal) {
+        if (lifecycle.formal) {
             backup = fs.readFileSync(FORMAL_BACKUP, "utf8");
-            if (sha256(backup) !== session.vm.formal.codeHash) throw new Error("formal backup does not match the lifecycle journal");
+            if (sha256(backup) !== lifecycle.formal.codeHash) throw new Error("formal backup does not match the lifecycle journal");
         }
         const current = fs.readFileSync(session.source, "utf8");
-        const finished = await finishVmSession(session, current, backup);
-        session.vm.formalId = finished.formalId;
-        session.vm.stage = "promoted";
+        const finished = await finishUserscriptSession(session, current, backup);
+        lifecycle.formalId = finished.formalId;
+        lifecycle.stage = "promoted";
         writeJson(SESSION_PATH, session);
     }
     await reloadVmTarget(session);
     run(process.execPath, [path.join(ROOT, "tools", "dev-server-control.js"), "stop"], childEnv({ source: session.source }), "dev server stop");
     fs.rmSync(SESSION_PATH, { force: true });
     fs.rmSync(FORMAL_BACKUP, { force: true });
-    emit({ status: "FINISHED", formalId: session.vm.formalId, browserLeftRunning: true }, options.json);
+    emit({ status: "FINISHED", formalId: lifecycle.formalId, manager: session.manager || "violentmonkey", browserLeftRunning: true }, options.json);
 }
 
 async function stop(options) {
     const session = readJson(SESSION_PATH);
-    if (session?.vm) await restoreVmSession(session);
-    if (session?.vm) await reloadVmTarget(session);
+    if (session?.vm || session?.tm) await restoreUserscriptSession(session);
+    if (session?.vm || session?.tm) await reloadVmTarget(session);
     const env = childEnv({ source: session?.source });
     run(process.execPath, [path.join(ROOT, "tools", "dev-server-control.js"), "stop"], env, "dev server stop");
     fs.rmSync(SESSION_PATH, { force: true });

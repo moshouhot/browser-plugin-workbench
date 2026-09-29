@@ -11,6 +11,7 @@
   },
   "userscript": {
     "enabled": true,
+    "manager": "violentmonkey",
     "nameSuffix": " [Workbench Dev]",
     "namespaceSuffix": ".workbench-dev",
     "sourcePath": "targets/userscript/main.user.js",

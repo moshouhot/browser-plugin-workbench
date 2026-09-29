@@ -19,6 +19,7 @@
     "tools/dev-server.js",
     "tools/generate-userscript-loader.js",
     "tools/source-identity.js",
+    "tools/tampermonkey.js",
     "tools/violentmonkey.js",
     "tools/start-browser.ps1",
     "targets/userscript/main.user.js",
@@ -37,7 +38,10 @@
     "browser": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/start-browser.ps1",
     "browser:verify": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/verify-browser.ps1",
     "check": "node tools/selftest.js",
-    "test": "node tools/generate-userscript-loader.js && node tools/smoke-test.js && node tools/cli-test.js && node tools/violentmonkey-test.js"
+    "test": "node tools/generate-userscript-loader.js && node tools/smoke-test.js && node tools/cli-test.js && node tools/violentmonkey-test.js && node tools/tampermonkey-test.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
   },
   "engines": {
     "node": ">=20"

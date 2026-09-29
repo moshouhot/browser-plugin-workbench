@@ -19,6 +19,7 @@ function loadConfig(env = process.env) {
 
     if (env.BPW_SOURCE) config.userscript.sourcePath = env.BPW_SOURCE;
     if (env.BPW_TARGET_URL) config.targetUrl = env.BPW_TARGET_URL;
+    if (env.BPW_USERSCRIPT_MANAGER) config.userscript.manager = String(env.BPW_USERSCRIPT_MANAGER).trim().toLowerCase();
     config.devServer.port = numberOverride(env.BPW_DEV_PORT, Number(config.devServer.port || 8890));
     config.browser.cdpPort = numberOverride(env.BPW_CDP_PORT, Number(config.browser.cdpPort || 9222));
     if (env.BPW_AGENT_SESSION) config.browser.agentSession = env.BPW_AGENT_SESSION;
