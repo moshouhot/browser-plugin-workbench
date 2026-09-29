@@ -28,7 +28,7 @@ If a capable AI can already perform a task dynamically with an existing mature t
 
 ## 4. What BPW owns
 
-V0.2 owns only:
+V0.2.1 owns only:
 
 1. **Userscript dev loader**
    - point at an existing external `.user.js`;
@@ -50,19 +50,27 @@ V0.2 owns only:
    - create/pin a dedicated workbench tab/session;
    - return the connection information AI needs to continue with `agent-browser` directly.
 
-5. **Small session state + cleanup**
+5. **Userscript manager lifecycle**
+   - Violentmonkey uses its background API;
+   - Tampermonkey uses its internal Fast API;
+   - `finish` promotes the current source into the formal script;
+   - `stop` restores the pre-debug Userscript state;
+   - neither path falls back to Userscript-manager management-page UI automation.
+
+6. **Small session state + cleanup**
    - remember only what BPW needs to own/clean;
    - stop BPW-owned local services;
    - never kill unrelated browser processes.
 
 ## 5. Public CLI
 
-V0.2 public surface is intentionally small:
+V0.2.1 public surface is intentionally small:
 
 ```text
 bpw doctor
 bpw start
 bpw status
+bpw finish
 bpw stop
 ```
 
@@ -163,11 +171,13 @@ AI
 
 The Skill contains workflow and judgment guidance. The CLI contains deterministic environment mechanics. The CLI remains independently usable without a Skill.
 
-## 12. V0.2 done
+## 12. V0.2.1 done
 
-V0.2 is complete when:
+V0.2.1 is complete when:
 
-- the 4-command CLI works;
+- the 5-command CLI works;
+- `finish` promotes a verified change and cleans the dev lifecycle;
+- `stop` restores the pre-debug manager state without promotion;
 - external Userscript source works without copying;
 - local server ownership is safe;
 - real Cent/CDP target setup works through reused tools;

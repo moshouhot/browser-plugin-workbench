@@ -1,4 +1,4 @@
-# Browser Plugin Workbench — Lean V0.2 Acceptance
+# Browser Plugin Workbench — Lean V0.2.1 Acceptance
 
 Status: Approved
 
@@ -12,6 +12,7 @@ PASS only if public CLI contains exactly the intended core workflow:
 doctor
 start
 status
+finish
 stop
 ```
 
@@ -62,7 +63,16 @@ An intentional stopped-server state should not spam page Console through the ins
 
 `bpw status` reports BPW-owned state without pretending to analyze the webpage.
 
-`bpw stop` cleans BPW-owned local service/state and leaves the normal browser alive.
+`bpw finish` promotes the current source through the selected Userscript manager, refreshes the dedicated target, stops the BPW source server, and clears the session while refusing unsafe overwrite if the formal script changed externally.
+
+`bpw stop` restores the pre-debug Userscript state, cleans BPW-owned local service/state, and leaves the normal browser alive.
+
+Supported automatic manager lifecycles:
+
+- Violentmonkey background API;
+- Tampermonkey internal Fast API.
+
+Neither may silently fall back to management-page UI automation.
 
 ## G6 — Automated regression
 
@@ -79,7 +89,7 @@ Tests must include an ownership-mismatch case proving an unrelated process is no
 
 ## G7 — Real My Prompt regression
 
-Mandatory before final V0.2 PASS:
+Mandatory before final V0.2.1 PASS:
 
 - external My Prompt source is used directly;
 - real Cent daily profile + Violentmonkey + ChatGPT path is exercised;
@@ -95,7 +105,7 @@ The AI may choose the appropriate DOM/Console/Network/screenshot checks for this
 
 - public config contains no private machine-specific path;
 - runtime remains ignored;
-- README describes the 4-command workflow and Skill + CLI relationship;
+- README describes the 5-command workflow, `finish` vs `stop`, manager selection, and Skill + CLI relationship;
 - docs do not claim untested manager/browser support as PASS;
 - `git diff --check` passes;
 - final worktree is clean.

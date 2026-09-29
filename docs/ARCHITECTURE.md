@@ -1,6 +1,6 @@
 # Architecture
 
-BPW V0.2 deliberately keeps the architecture small:
+BPW V0.2.1 deliberately keeps the architecture small:
 
 ```text
 AI / browser-plugin-workbench Skill
@@ -22,6 +22,8 @@ Userscript loader      local source server
 After `bpw start`, browser debugging goes directly through `agent-browser`.
 
 BPW intentionally does not provide its own DOM, Console, Network, screenshot, assertion, or AI reasoning layer.
+
+`bpw finish` promotes the verified real source and closes the development lifecycle. `bpw stop` restores the pre-debug Userscript state without promotion. Neither path uses Userscript-manager management-page UI automation.
 
 ## Why this shape
 

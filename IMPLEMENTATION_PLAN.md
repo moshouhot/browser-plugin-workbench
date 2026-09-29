@@ -1,4 +1,4 @@
-# Browser Plugin Workbench — Lean V0.2 Implementation Plan
+# Browser Plugin Workbench — Lean V0.2.1 Implementation Plan
 
 Status: Approved
 
@@ -16,6 +16,7 @@ Add a single small CLI entrypoint with:
 bpw doctor
 bpw start
 bpw status
+bpw finish
 bpw stop
 ```
 
@@ -47,13 +48,21 @@ Harden the known V0.1 lifecycle weakness:
 
 This is required because it is mechanical safety code AI should not improvise every run.
 
-## Phase 4 — Quiet idle loader
+## Phase 4 — Userscript manager lifecycle
+
+- Violentmonkey: background API lifecycle for inspect/activate/restore/finish.
+- Tampermonkey 5.5+: internal Fast API lifecycle for list/read/update/create/delete/enabled state.
+- Never fall back to Userscript-manager management-page UI automation.
+- `finish` promotes the current source; `stop` restores the pre-debug state.
+- Preserve `--manual-loader` only as an explicit compatibility mode without automatic finish promotion.
+
+## Phase 5 — Quiet idle loader
 
 Keep strict-CSP behavior, but make the one-time-installed loader quietly no-op when BPW is intentionally stopped.
 
-Do not build automatic Violentmonkey private-storage management in V0.2.
+Keep loader behavior quiet while the BPW source server is intentionally stopped.
 
-## Phase 5 — Tests
+## Phase 6 — Tests
 
 Extend tests only around BPW-owned mechanics:
 
@@ -62,12 +71,14 @@ Extend tests only around BPW-owned mechanics:
 - source override;
 - server identity and safe reuse;
 - stale/mismatched PID does not kill an unrelated process;
-- start/status/stop local lifecycle without real browser where practical;
+- start/status/finish/stop lifecycle where practical;
+- Violentmonkey background-API contract regression;
+- Tampermonkey Fast-API contract regression;
 - existing loader metadata regression.
 
 Do not build a generic test framework.
 
-## Phase 6 — Real browser acceptance
+## Phase 7 — Real browser acceptance
 
 Use the existing local `cent-cdp-browser` capability and real My Prompt regression.
 
@@ -81,9 +92,10 @@ Required live result:
 - dedicated target session/tab created;
 - My Prompt still executes on ChatGPT without the old CSP `EvalError`;
 - AI can directly use `agent-browser` after `bpw start`;
-- `bpw stop` stops BPW server without killing Cent.
+- `bpw finish` promotes a verified change and cleans BPW state;
+- `bpw stop` restores without killing Cent.
 
-## Phase 7 — Thin Skill
+## Phase 8 — Thin Skill
 
 Only after CLI behavior is stable, add/package a minimal `browser-plugin-workbench` Skill that teaches AI how to use `bpw` + `agent-browser`.
 

@@ -23,12 +23,13 @@ BPW stops at the environment boundary. After `start`, AI talks to `agent-browser
 
 ## 2. CLI
 
-Only four public commands:
+Only five public commands:
 
 ```text
 bpw doctor
 bpw start
 bpw status
+bpw finish
 bpw stop
 ```
 
@@ -66,17 +67,27 @@ Report only facts BPW owns:
 
 Do not inspect DOM/Console/Network.
 
+### `finish`
+
+- verify the formal Userscript identity/source contract;
+- promote the current real source into the selected Userscript manager;
+- enable the formal script and disable/remove the BPW-created dev loader as appropriate;
+- refresh the dedicated target;
+- stop the BPW-owned source server and clear session state;
+- refuse unsafe overwrite if the formal script changed outside BPW during the session.
+
 ### `stop`
 
+- restore the selected Userscript manager to its pre-debug state;
 - stop only a proven BPW-owned source server;
 - clear BPW session files;
-- leave Cent/browser/tab alone.
+- leave Cent/browser/profile alone.
 
 ## 3. Configuration
 
 Keep the existing public `workbench.config.json` as defaults.
 
-Precedence for V0.2:
+Precedence for V0.2.1:
 
 ```text
 CLI --source / --url
@@ -94,6 +105,7 @@ BPW_TARGET_URL
 BPW_DEV_PORT
 BPW_CDP_PORT
 BPW_AGENT_SESSION
+BPW_USERSCRIPT_MANAGER
 CENT_CDP_SKILL
 ```
 
@@ -150,15 +162,22 @@ Do not introduce `core/`, `providers/`, `adapters/`, registries, plugin interfac
 
 Split files only when current code becomes hard to maintain.
 
-## 8. Skill
+## 8. Userscript manager lifecycle
 
-The future `browser-plugin-workbench` Skill should be thin:
+- Violentmonkey: use the proven background API path; never fall back to management-page UI automation.
+- Tampermonkey: use the internal Fast API path (`loadTree`, `saveScript`, `modifyScriptOptions`, `purgeScripts`) through the extension page context.
+- `finish` promotes current source; `stop` restores the pre-debug state.
+- `--manual-loader` remains an explicit compatibility mode and does not support automatic `finish` promotion.
+
+## 9. Skill
+
+The `browser-plugin-workbench` Skill should stay thin:
 
 1. run `bpw doctor`;
-2. run `bpw start --source ... --url ...`;
+2. prefer request JSON and run `bpw start --request ...` for AI/Codex; keep direct `--source/--url` for human terminals;
 3. use returned CDP/session with `agent-browser` directly;
 4. AI diagnoses, edits, reloads, inspects, and verifies;
-5. run `bpw stop` when done.
+5. run `bpw finish` after successful verification, or `bpw stop` to abandon/restore.
 
 The Skill does not contain a duplicate BPW implementation.
 
