@@ -162,7 +162,7 @@ BPW 会：
 3. 启动 `127.0.0.1` source server；
 4. 调用 `cent-cdp-browser`；
 5. 通过 Chrome CDP 直接创建或复用专属 target；
-6. 按显式 manager 执行 Userscript 生命周期：Violentmonkey 使用其后台 API；Tampermonkey 使用官方 External userscripts API 做源码 CRUD，仅用内部 `loadTree` / `modifyScriptOptions` 补启停能力；任一所需能力不可用都立即报错，不回退管理页 UI；
+6. 按显式 manager 执行 Userscript 生命周期：Violentmonkey 使用其后台 API；Tampermonkey 使用官方 External userscripts API 做 `list/get/patch`，内部 Fast API 只补 `enabled/create/delete`；任一所需能力不可用都立即报错，不回退管理页 UI；
 7. 通过 CDP 直接刷新目标页；
 8. 返回 `targetId`、`targetCdpUrl`、CDP、session、source、loader 等信息。
 
@@ -170,10 +170,13 @@ BPW 会：
 
 ### Tampermonkey 后端
 
-Tampermonkey 必须显式选择 `manager: "tampermonkey"`。BPW 不使用 Dashboard UI 自动化，也不调用私有 `saveScript` 来补官方能力缺口：
+Tampermonkey 必须显式选择 `manager: "tampermonkey"`。BPW 不使用 Dashboard UI 自动化，采用明确分工的混合后端：
 
-- 源码读取/更新/创建/删除：Tampermonkey Editors 转发的官方 External `userscripts` API（`list/get/patch/put/delete`）；
-- 脚本启停：Tampermonkey 自己扩展页上下文中的 `loadTree` + `modifyScriptOptions`；
+- 正式脚本和 Loader 的列举/读取/源码更新：Tampermonkey Editors 转发的官方 External `userscripts` API（`list/get/patch`）；
+- 脚本状态读取/启停：Tampermonkey 自己扩展页上下文中的 `loadTree` + `modifyScriptOptions`；
+- 仅在需要新建 BPW 脚本时，使用 Dashboard 自己使用的窄内部 `saveScript(code + new_script)` 路径；创建后立即用 `loadTree` 验证真实 UUID 并置为 disabled；
+- 仅删除 BPW 本次创建的脚本：先用 `saveScript(uuid)` 移入回收站并验证，再用 `purgeScripts([uuid])` 彻底清除并再次验证；
+- 已存在正式脚本的源码绝不走私有 `saveScript` 更新，始终使用 External `patch`；
 - 启动前会同时探测两条通道，缺少任一能力就 fail closed。
 
 Tampermonkey Editors 不要求用户手工安装，也不要求首次联网下载。BPW 仓库直接内置固定版本的官方 **Tampermonkey Editors 1.0.7** companion：
@@ -194,7 +197,7 @@ BPW 的 `ensureEditors()` 会：
 
 如果 Cent 已经在运行且本次启动参数中没有内置 Editors，Chrome 不能热加载新的 `--load-extension`。这种情况下 `cent-cdp-browser` 会沿用它原有的受控重启流程，让 Editors 在浏览器启动阶段加载；不要求用户去商店安装扩展。
 
-完整自动生命周期仍要求 Tampermonkey External API 实际声明 `list/get/patch/put/delete`。Tampermonkey 5.5.0 只声明 `list/get/patch`，即使 Editors 已自动准备完成也会安全拒绝源码 CRUD；不会偷偷改用内部 `saveScript`。
+Tampermonkey 5.5.0 已满足这套混合后端：External API 提供 `list/get/patch`，Fast API 负责 `enabled/create/delete`。BPW 对私有创建/删除接口实行窄调用、精确 `uuid + @name + @namespace` 校验和操作后复核；它不是通用的私有 CRUD fallback。
 
 若使用其他 Userscript 管理器，可显式运行 `bpw start ... --manual-loader`，沿用手动安装 Loader 的流程。该模式不支持 `bpw finish` 自动回写。
 

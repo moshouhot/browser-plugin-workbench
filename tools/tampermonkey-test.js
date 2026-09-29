@@ -7,13 +7,13 @@ const tampermonkey = require("./tampermonkey");
 
 assert.deepEqual(
     tampermonkey.missingExternalCapabilities(["options", "list", "get", "patch"]),
-    ["put", "delete"],
-    "Tampermonkey 5.5 capability gate must reject missing put/delete"
+    [],
+    "Tampermonkey 5.5 External API should satisfy the hybrid backend"
 );
 assert.deepEqual(
-    tampermonkey.missingExternalCapabilities(["options", "list", "get", "patch", "put", "delete"]),
-    [],
-    "Tampermonkey 5.6+ capability gate should accept the complete External API"
+    tampermonkey.missingExternalCapabilities(["options", "list", "get"]),
+    ["patch"],
+    "Tampermonkey hybrid backend must still require External patch"
 );
 assert(tampermonkey.TAMPERMONKEY_IDS.includes("dhdgffkkebhmkfjojejmpbldmpobfkfo"), "stable Tampermonkey extension id missing");
 assert(tampermonkey.EDITORS_IDS.length >= 2, "Tampermonkey Editors ids are incomplete");
@@ -28,10 +28,10 @@ const bundledManifest = JSON.parse(fs.readFileSync(path.join(bundled.path, "mani
 assert.equal(bundledManifest.update_url, undefined, "bundled Tampermonkey Editors must stay pinned and must not auto-update");
 
 const source = fs.readFileSync(path.join(__dirname, "tampermonkey.js"), "utf8");
-for (const forbidden of ["CodeMirror", "querySelector", ".click(", "agent-browser", "saveScript\""]) {
-    assert.equal(source.includes(forbidden), false, `Tampermonkey UI/private-CRUD fallback returned: ${forbidden}`);
+for (const forbidden of ["CodeMirror", "querySelector", ".click(", "agent-browser", "action: \"put\"", "action: \"delete\""]) {
+    assert.equal(source.includes(forbidden), false, `Tampermonkey UI/External create-delete fallback returned: ${forbidden}`);
 }
-for (const required of ["loadTree", "modifyScriptOptions", "action: \"list\"", "action: \"get\"", "action: \"patch\"", "action: \"put\"", "action: \"delete\""]) {
+for (const required of ["loadTree", "modifyScriptOptions", "saveScript", "purgeScripts", "fastCreateScript", "fastDeleteScript", "action: \"list\"", "action: \"get\"", "action: \"patch\""]) {
     assert(source.includes(required), `Tampermonkey hybrid backend is missing: ${required}`);
 }
 for (const required of ["validateBundledEditors", "prepareManagedEditors", "BUNDLED_EDITORS_ROOT", "extensionIdFromPublicKey"]) {
