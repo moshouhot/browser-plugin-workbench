@@ -38,20 +38,12 @@ function normalizeManager(value) {
     return manager;
 }
 
-async function tryFastBrowserReuse(config, targetUrl, requiredExtensionId = null) {
+async function tryFastBrowserReuse(config, targetUrl) {
     const cached = readJson(BROWSER_STATE);
     const port = Number(config.browser.cdpPort);
     if (!cached || Number(cached.cdpPort) !== port || !cached.browserWebSocketDebuggerUrl) return null;
     const version = await httpJson(`http://127.0.0.1:${port}/json/version`, 350);
     if (!version?.webSocketDebuggerUrl || version.webSocketDebuggerUrl !== cached.browserWebSocketDebuggerUrl) return null;
-    if (requiredExtensionId) {
-        try {
-            const editors = await tampermonkey.findEditorsExtension(port);
-            if (editors.extensionId !== requiredExtensionId) return null;
-        } catch {
-            return null;
-        }
-    }
     const browser = {
         ...cached,
         targetUrl,
@@ -62,9 +54,9 @@ async function tryFastBrowserReuse(config, targetUrl, requiredExtensionId = null
     return browser;
 }
 
-async function bootstrapBrowser(config, env, targetUrl, extensionRequirement = null) {
+async function bootstrapBrowser(config, env, targetUrl) {
     if (process.platform !== "win32") throw new Error("V0.2 browser bootstrap currently requires Windows");
-    const reused = await tryFastBrowserReuse(config, targetUrl, extensionRequirement?.extensionId || null);
+    const reused = await tryFastBrowserReuse(config, targetUrl);
     if (reused) return reused;
     const centRoot = config.browser?.centCdpSkill || "";
     const starter = path.join(centRoot, "scripts", "start_cent_cdp.py");
@@ -77,8 +69,6 @@ async function bootstrapBrowser(config, env, targetUrl, extensionRequirement = n
         "--url", targetUrl,
         "--port", String(config.browser.cdpPort)
     ];
-    if (extensionRequirement?.path) args.push("--load-extension", extensionRequirement.path);
-    if (extensionRequirement?.extensionId) args.push("--required-extension-id", extensionRequirement.extensionId);
     const result = spawnSync("python", args, {
         cwd: ROOT,
         env: pythonEnv,
@@ -104,9 +94,6 @@ async function bootstrapBrowser(config, env, targetUrl, extensionRequirement = n
         browser: String(value.browser || ""),
         userData: String(value.user_data || ""),
         profile: String(value.profile || ""),
-        requiredExtensionId: String(value.required_extension_id || ""),
-        extensionSource: String(value.extension_source || ""),
-        loadExtension: String(value.load_extension || ""),
         browserWebSocketDebuggerUrl: version.webSocketDebuggerUrl,
         startedAt: new Date().toISOString()
     };
@@ -360,26 +347,12 @@ async function start(options) {
     if (fs.existsSync(SESSION_PATH)) throw new Error("an existing BPW session must be finished or stopped before starting another");
     if (fs.existsSync(FORMAL_BACKUP)) throw new Error(`unresolved formal script backup exists: ${FORMAL_BACKUP}`);
     fs.mkdirSync(RUNTIME, { recursive: true });
-    let editorRequirement = null;
-    if (manager === "tampermonkey" && !options.manualLoader) {
-        try {
-            const activeEditors = await tampermonkey.findEditorsExtension(Number(config.browser.cdpPort));
-            editorRequirement = {
-                extensionId: activeEditors.extensionId,
-                version: activeEditors.version,
-                path: null,
-                source: "installed-active"
-            };
-        } catch {
-            editorRequirement = await tampermonkey.prepareManagedEditors();
-        }
-    }
     run(process.execPath, [path.join(ROOT, "tools", "generate-userscript-loader.js")], env, "loader generation");
     run(process.execPath, [path.join(ROOT, "tools", "dev-server-control.js"), "start"], env, "dev server start");
 
     let browser;
     try {
-        browser = await bootstrapBrowser(config, env, targetUrl, editorRequirement);
+        browser = await bootstrapBrowser(config, env, targetUrl);
     } catch (error) {
         run(process.execPath, [path.join(ROOT, "tools", "dev-server-control.js"), "stop"], env, "dev server cleanup");
         throw error;
@@ -395,12 +368,6 @@ async function start(options) {
         targetId: "",
         targetCdpUrl: "",
         browser: browser.browser || "",
-        editors: editorRequirement && {
-            extensionId: editorRequirement.extensionId,
-            version: editorRequirement.version,
-            source: browser.extensionSource || editorRequirement.source,
-            path: editorRequirement.path
-        },
         manager,
         startedAt: new Date().toISOString()
     };
@@ -433,7 +400,6 @@ async function start(options) {
                     sourceHash: sha256(sourceCode),
                     formal: prepared.formal && {
                         id: prepared.formal.id,
-                        path: prepared.formal.path,
                         enabled: prepared.formal.enabled,
                         codeHash: sha256(prepared.formal.code)
                     }

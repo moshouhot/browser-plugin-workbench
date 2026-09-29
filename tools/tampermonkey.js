@@ -1,174 +1,13 @@
 const crypto = require("node:crypto");
-const fs = require("node:fs");
 const http = require("node:http");
-const path = require("node:path");
-const { WebSocketServer, WebSocket: WsSocket } = require("ws");
 const { metadataIdentity } = require("./source-identity");
 
 const TAMPERMONKEY_IDS = [
     "dhdgffkkebhmkfjojejmpbldmpobfkfo",
     "gcalenpjmijncebpfijmoaglllgpjagf"
 ];
-const EDITORS_IDS = [
-    "afknhifbpphifnhohilgdbjclplncbij",
-    "lieodnapokbjkkdkhdljlllmgkmdokcm"
-];
-const EDITORS_STABLE_ID = "lieodnapokbjkkdkhdljlllmgkmdokcm";
-const EDITORS_BUNDLED_VERSION = "1.0.7";
-const EDITORS_BUNDLED_COMMIT = "cabbb288f5d7b7734c4ff88a4cefef97d301c633";
-const REQUIRED_EXTERNAL_ACTIONS = ["list", "get", "patch"];
-const BUNDLED_EDITORS_ROOT = path.join(__dirname, "..", "vendor", "tampermonkey-editors");
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function extensionIdFromPublicKey(publicKey) {
-    const hex = crypto.createHash("sha256").update(publicKey).digest("hex").slice(0, 32);
-    return [...hex].map((character) => String.fromCharCode(97 + Number.parseInt(character, 16))).join("");
-}
-
-function assertRuntimeMessage(result, label) {
-    if (result?.lastError) throw new Error(`${label} failed: ${result.lastError}`);
-    if (result?.response?.error) {
-        const error = result.response.error;
-        throw new Error(`${label} failed: ${typeof error === "string" ? error : JSON.stringify(error)}`);
-    }
-    return result?.response || {};
-}
-
-async function loadFastScripts(wsUrl, referrer) {
-    const result = await cdpEvaluate(wsUrl, runtimeMessageExpression({
-        method: "loadTree",
-        referrer,
-        complete: true
-    }));
-    const response = assertRuntimeMessage(result, `Tampermonkey loadTree ${referrer}`);
-    if (!response.items) throw new Error(`Tampermonkey loadTree ${referrer} returned no items`);
-    return flattenScriptItems(response.items);
-}
-
-function exactFastMatches(items, identity) {
-    return items.filter((item) => item.name === identity.name && item.namespace === identity.namespace);
-}
-
-async function fastCreateScript(port, extensionId, code, identity, label = "script") {
-    const actual = metadataIdentity(code);
-    if (actual.name !== identity.name || actual.namespace !== identity.namespace) {
-        throw new Error(`Tampermonkey ${label} source identity changed before create`);
-    }
-    return withTampermonkeyPage(port, extensionId, async (wsUrl) => {
-        const activeBefore = exactFastMatches(await loadFastScripts(wsUrl, "options.scripts.userscripts"), identity);
-        const trashBefore = exactFastMatches(await loadFastScripts(wsUrl, "options.trash"), identity);
-        if (activeBefore.length || trashBefore.length) {
-            throw new Error(`Tampermonkey ${label} already exists in active scripts or trash; refusing private create`);
-        }
-
-        const created = assertRuntimeMessage(await cdpEvaluate(wsUrl, runtimeMessageExpression({
-            method: "saveScript",
-            uuid: `bpw-${crypto.randomBytes(12).toString("hex")}`,
-            name: identity.name,
-            code,
-            new_script: true,
-            reload: false
-        })), `Tampermonkey private create ${label}`);
-        if (created.installed !== true) throw new Error(`Tampermonkey private create ${label} did not report installed=true`);
-
-        const activeAfter = exactFastMatches(await loadFastScripts(wsUrl, "options.scripts.userscripts"), identity);
-        if (activeAfter.length !== 1) throw new Error(`Tampermonkey private create ${label} did not produce exactly one active script`);
-        const script = activeAfter[0];
-        if (created.uuid && String(created.uuid) !== script.uuid) {
-            throw new Error(`Tampermonkey private create ${label} returned a different UUID than loadTree`);
-        }
-
-        assertRuntimeMessage(await cdpEvaluate(wsUrl, runtimeMessageExpression({
-            method: "modifyScriptOptions",
-            uuid: script.uuid,
-            enabled: false,
-            reload: false
-        })), `Tampermonkey disable newly created ${label}`);
-        const verified = exactFastMatches(await loadFastScripts(wsUrl, "options.scripts.userscripts"), identity);
-        if (verified.length !== 1 || verified[0].uuid !== script.uuid || verified[0].enabled !== false) {
-            throw new Error(`Tampermonkey newly created ${label} could not be verified disabled`);
-        }
-        return verified[0];
-    });
-}
-
-async function fastDeleteScript(port, extensionId, uuid, identity, label = "script") {
-    if (!uuid) return { deleted: false };
-    return withTampermonkeyPage(port, extensionId, async (wsUrl) => {
-        let active = await loadFastScripts(wsUrl, "options.scripts.userscripts");
-        let trash = await loadFastScripts(wsUrl, "options.trash");
-        const byUuid = (items) => items.filter((item) => item.uuid === uuid);
-        const activeByUuid = byUuid(active);
-        const trashByUuid = byUuid(trash);
-        const matchesIdentity = (item) => item.name === identity.name && item.namespace === identity.namespace;
-        for (const item of [...activeByUuid, ...trashByUuid]) {
-            if (!matchesIdentity(item)) throw new Error(`Tampermonkey ${label} UUID identity changed; refusing private delete`);
-        }
-        if (!activeByUuid.length && !trashByUuid.length) return { deleted: false };
-        if (activeByUuid.length > 1 || trashByUuid.length > 1) throw new Error(`Tampermonkey ${label} UUID is ambiguous; refusing private delete`);
-
-        if (activeByUuid.length) {
-            assertRuntimeMessage(await cdpEvaluate(wsUrl, runtimeMessageExpression({
-                method: "saveScript",
-                uuid,
-                reload: false
-            })), `Tampermonkey move ${label} to trash`);
-            active = await loadFastScripts(wsUrl, "options.scripts.userscripts");
-            trash = await loadFastScripts(wsUrl, "options.trash");
-            if (byUuid(active).length !== 0) throw new Error(`Tampermonkey ${label} remained active after trash transition`);
-            const moved = byUuid(trash);
-            if (moved.length !== 1 || !matchesIdentity(moved[0])) throw new Error(`Tampermonkey ${label} trash transition could not be verified`);
-        }
-
-        assertRuntimeMessage(await cdpEvaluate(wsUrl, runtimeMessageExpression({
-            method: "purgeScripts",
-            uuids: [uuid]
-        }), 12000), `Tampermonkey purge ${label}`);
-        active = await loadFastScripts(wsUrl, "options.scripts.userscripts");
-        trash = await loadFastScripts(wsUrl, "options.trash");
-        if (byUuid(active).length || byUuid(trash).length) throw new Error(`Tampermonkey ${label} still exists after purge`);
-        return { deleted: true };
-    });
-}
-
-function validateBundledEditors(directory = BUNDLED_EDITORS_ROOT) {
-    const manifestPath = path.join(directory, "manifest.json");
-    const metadataPath = path.join(directory, "BPW_VENDOR.json");
-    if (!fs.existsSync(manifestPath) || !fs.existsSync(metadataPath)) return null;
-    try {
-        const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-        const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
-        const publicKey = Buffer.from(String(manifest.key || ""), "base64");
-        if (extensionIdFromPublicKey(publicKey) !== EDITORS_STABLE_ID) return null;
-        if (metadata.extensionId !== EDITORS_STABLE_ID) return null;
-        if (metadata.version !== EDITORS_BUNDLED_VERSION || manifest.version !== EDITORS_BUNDLED_VERSION) return null;
-        if (metadata.upstreamCommit !== EDITORS_BUNDLED_COMMIT) return null;
-        if (manifest.name !== "Tampermonkey Editors") return null;
-        if (Number(manifest.manifest_version) !== 3) return null;
-        if (manifest.update_url) return null;
-        for (const required of ["background.js", "popup.html", "popup.js", "LICENSE", "3rdpartylicenses.txt"]) {
-            if (!fs.existsSync(path.join(directory, required))) return null;
-        }
-        return {
-            extensionId: EDITORS_STABLE_ID,
-            version: manifest.version,
-            path: directory,
-            source: "bundled",
-            upstreamCommit: EDITORS_BUNDLED_COMMIT
-        };
-    } catch {
-        return null;
-    }
-}
-
-async function prepareManagedEditors() {
-    const ready = validateBundledEditors();
-    if (!ready) {
-        throw new Error(`bundled Tampermonkey Editors ${EDITORS_BUNDLED_VERSION} is missing or failed validation`);
-    }
-    return ready;
-}
 
 function requestJson(url, method = "GET") {
     return new Promise((resolve, reject) => {
@@ -199,7 +38,7 @@ async function closeTarget(port, targetId) {
     try { await getJson(`http://127.0.0.1:${port}/json/close/${targetId}`); } catch {}
 }
 
-function cdpCall(wsUrl, method, params = {}, timeout = 6000) {
+function cdpCall(wsUrl, method, params = {}, timeout = 8000) {
     if (typeof WebSocket !== "function") throw new Error("Node WebSocket support is unavailable");
     return new Promise((resolve, reject) => {
         const socket = new WebSocket(wsUrl);
@@ -228,7 +67,7 @@ function cdpCall(wsUrl, method, params = {}, timeout = 6000) {
     });
 }
 
-async function cdpEvaluate(wsUrl, expression, timeout = 6000) {
+async function cdpEvaluate(wsUrl, expression, timeout = 8000) {
     const result = await cdpCall(wsUrl, "Runtime.evaluate", {
         expression,
         awaitPromise: true,
@@ -251,11 +90,10 @@ async function waitForExtensionRuntime(wsUrl, extensionId) {
     return null;
 }
 
-async function inspectExtensionPage(port, extensionId, page) {
+async function inspectExtensionPage(port, extensionId, page = "options.html") {
     const target = await createTarget(port, `chrome-extension://${extensionId}/${page}`);
     try {
-        const info = await waitForExtensionRuntime(target.webSocketDebuggerUrl, extensionId);
-        return info ? { ...info, target } : null;
+        return await waitForExtensionRuntime(target.webSocketDebuggerUrl, extensionId);
     } finally {
         await closeTarget(port, target.id);
     }
@@ -264,49 +102,18 @@ async function inspectExtensionPage(port, extensionId, page) {
 async function findTampermonkeyExtension(port) {
     for (const extensionId of TAMPERMONKEY_IDS) {
         try {
-            const info = await inspectExtensionPage(port, extensionId, "options.html");
+            const info = await inspectExtensionPage(port, extensionId);
             if (info) return { extensionId, version: info.version, name: info.name };
         } catch {}
     }
     throw new Error("Tampermonkey extension was not found in the current CDP profile");
 }
 
-async function findEditorsExtension(port) {
-    for (const extensionId of EDITORS_IDS) {
-        try {
-            const info = await inspectExtensionPage(port, extensionId, "popup.html");
-            if (info) return { extensionId, version: info.version, name: info.name };
-        } catch {}
-    }
-    throw new Error("Tampermonkey Editors is required for the External userscripts API but is not installed in the current CDP profile");
-}
-
-function flattenScriptItems(value, out = []) {
-    if (!value) return out;
-    if (Array.isArray(value)) {
-        value.forEach((item) => flattenScriptItems(item, out));
-        return out;
-    }
-    if (typeof value !== "object") return out;
-    if (value.uuid && value.name && Object.hasOwn(value, "enabled")) {
-        out.push({
-            uuid: String(value.uuid),
-            name: String(value.name),
-            namespace: String(value.namespace || ""),
-            enabled: Boolean(value.enabled)
-        });
-    }
-    Object.values(value).forEach((item) => flattenScriptItems(item, out));
-    return out;
-}
-
 async function withTampermonkeyPage(port, extensionId, operation) {
     const target = await createTarget(port, `chrome-extension://${extensionId}/options.html`);
     try {
         const verified = await waitForExtensionRuntime(target.webSocketDebuggerUrl, extensionId);
-        if (verified?.id !== extensionId) {
-            throw new Error("Tampermonkey extension page could not be verified");
-        }
+        if (!verified) throw new Error("Tampermonkey extension page could not be verified");
         return await operation(target.webSocketDebuggerUrl);
     } finally {
         await closeTarget(port, target.id);
@@ -322,25 +129,74 @@ function runtimeMessageExpression(message) {
     })`;
 }
 
+function assertRuntimeMessage(result, label) {
+    if (result?.lastError) throw new Error(`${label} failed: ${result.lastError}`);
+    if (result?.response?.error) {
+        const error = result.response.error;
+        throw new Error(`${label} failed: ${typeof error === "string" ? error : JSON.stringify(error)}`);
+    }
+    return result?.response || {};
+}
+
+function flattenScriptItems(value, out = []) {
+    if (!value) return out;
+    if (Array.isArray(value)) {
+        value.forEach((item) => flattenScriptItems(item, out));
+        return out;
+    }
+    if (typeof value !== "object") return out;
+    if (value.uuid && value.name && Object.hasOwn(value, "enabled")) {
+        out.push({
+            uuid: String(value.uuid),
+            name: String(value.name),
+            namespace: String(value.namespace || ""),
+            enabled: Boolean(value.enabled),
+            deleted: Boolean(value.deleted)
+        });
+    }
+    Object.values(value).forEach((item) => flattenScriptItems(item, out));
+    return out;
+}
+
+async function loadFastTree(wsUrl, referrer, extra = {}) {
+    const result = await cdpEvaluate(wsUrl, runtimeMessageExpression({
+        method: "loadTree",
+        referrer,
+        complete: true,
+        ...extra
+    }));
+    const response = assertRuntimeMessage(result, `Tampermonkey loadTree ${referrer}`);
+    if (!Object.hasOwn(response, "items")) throw new Error(`Tampermonkey loadTree ${referrer} returned no items`);
+    return response.items;
+}
+
+function exactMatches(items, identity) {
+    return items.filter((item) => item.name === identity.name && item.namespace === identity.namespace);
+}
+
+async function fastReadSourceOnPage(wsUrl, uuid) {
+    const items = await loadFastTree(wsUrl, "options.scripts.userscripts.source", { uuid });
+    const source = Array.isArray(items) ? items[0] : undefined;
+    if (typeof source !== "string") throw new Error(`Tampermonkey source read failed for ${uuid}`);
+    return source;
+}
+
+async function fastReadSource(port, extensionId, uuid) {
+    return withTampermonkeyPage(port, extensionId, (wsUrl) => fastReadSourceOnPage(wsUrl, uuid));
+}
+
 async function fastSnapshot(port, extensionId, identity, loaderIdentity) {
     return withTampermonkeyPage(port, extensionId, async (wsUrl) => {
-        const noop = await cdpEvaluate(wsUrl, runtimeMessageExpression({ method: "modifyScriptOptions" }));
-        if (noop?.lastError) throw new Error(`Tampermonkey modifyScriptOptions probe failed: ${noop.lastError}`);
-        const tree = await cdpEvaluate(wsUrl, runtimeMessageExpression({
-            method: "loadTree",
-            referrer: "options.scripts.userscripts",
-            complete: true
-        }));
-        if (tree?.lastError || !tree?.response?.items) {
-            throw new Error(`Tampermonkey loadTree probe failed${tree?.lastError ? `: ${tree.lastError}` : ""}`);
-        }
-        const scripts = flattenScriptItems(tree.response.items);
-        const match = (wanted) => scripts.filter((item) => item.name === wanted.name && item.namespace === wanted.namespace);
-        const formal = match(identity);
-        const loader = match(loaderIdentity);
-        if (formal.length > 1) throw new Error("multiple Tampermonkey formal scripts match the requested identity");
-        if (loader.length > 1) throw new Error("multiple Tampermonkey dev loaders match the requested identity");
-        return { formal: formal[0] || null, loader: loader[0] || null, scripts };
+        const items = flattenScriptItems(await loadFastTree(wsUrl, "options.scripts.userscripts"));
+        const formalMatches = exactMatches(items, identity);
+        const loaderMatches = exactMatches(items, loaderIdentity);
+        if (formalMatches.length > 1) throw new Error("multiple Tampermonkey formal scripts match the requested identity");
+        if (loaderMatches.length > 1) throw new Error("multiple Tampermonkey dev loaders match the requested identity");
+        const formal = formalMatches[0] || null;
+        const loader = loaderMatches[0] || null;
+        if (formal) formal.code = await fastReadSourceOnPage(wsUrl, formal.uuid);
+        if (loader) loader.code = await fastReadSourceOnPage(wsUrl, loader.uuid);
+        return { formal, loader, scripts: items };
     });
 }
 
@@ -348,287 +204,203 @@ async function setEnabledStates(port, extensionId, changes) {
     if (!changes.length) return;
     return withTampermonkeyPage(port, extensionId, async (wsUrl) => {
         for (const change of changes) {
-            const result = await cdpEvaluate(wsUrl, runtimeMessageExpression({
+            assertRuntimeMessage(await cdpEvaluate(wsUrl, runtimeMessageExpression({
                 method: "modifyScriptOptions",
                 uuid: change.uuid,
                 enabled: Boolean(change.enabled),
                 reload: false
-            }));
-            if (result?.lastError) throw new Error(`Tampermonkey modifyScriptOptions failed: ${result.lastError}`);
+            })), "Tampermonkey modifyScriptOptions");
         }
     });
 }
 
-class ExternalBridge {
-    constructor() {
-        this.auth = randomAuthCharacter();
-        this.echo = randomAuthCharacter(this.auth);
-        this.ws = null;
-        this.pending = new Map();
-        this.nextId = 1;
-        this.connected = new Promise((resolve, reject) => {
-            this.resolveConnected = resolve;
-            this.rejectConnected = reject;
-        });
-        this.server = new WebSocketServer({ host: "localhost", port: 0 });
-        this.listening = new Promise((resolve, reject) => {
-            this.server.once("listening", resolve);
-            this.server.once("error", reject);
-        });
-        this.server.on("connection", (socket) => this.handleConnection(socket));
-    }
-
-    async port() {
-        await this.listening;
-        const address = this.server.address();
-        if (!address || typeof address !== "object") throw new Error("Tampermonkey External API bridge did not bind a local port");
-        return address.port;
-    }
-
-    handleConnection(socket) {
-        const receiveOnce = () => new Promise((resolve, reject) => {
-            socket.once("message", (value) => resolve(String(value)));
-            socket.once("close", () => reject(new Error("Tampermonkey Editors WebSocket closed during authentication")));
-        });
-        (async () => {
-            const first = JSON.parse(await receiveOnce());
-            if (first?.method !== "auth" || first?.token !== this.auth) throw new Error("Tampermonkey Editors authentication failed");
-            socket.send(JSON.stringify({ method: "auth", token: this.echo }));
-            const second = JSON.parse(await receiveOnce());
-            if (second?.method !== "authOK") throw new Error("Tampermonkey Editors did not confirm authentication");
-            if (this.ws && this.ws !== socket) this.ws.close(4009, "Connection superseded");
-            this.ws = socket;
-            socket.on("message", (value) => this.handleMessage(String(value)));
-            socket.on("close", () => { if (this.ws === socket) this.ws = null; });
-            this.resolveConnected();
-        })().catch((error) => {
-            try { socket.close(3003, "Auth failed"); } catch {}
-            this.rejectConnected(error);
-        });
-    }
-
-    handleMessage(raw) {
-        let data;
-        try { data = JSON.parse(raw); } catch { return; }
-        if (data?.method === "pong") return;
-        const id = String(data?.id ?? data?.messageId ?? "");
-        const pending = this.pending.get(id);
-        if (!pending || !data?.response) return;
-        this.pending.delete(id);
-        clearTimeout(pending.timer);
-        pending.resolve(data.response);
-    }
-
-    async connectEditors(port, editorsExtensionId) {
-        const localPort = await this.port();
-        const target = await createTarget(port, `chrome-extension://${editorsExtensionId}/popup.html`);
-        try {
-            const verified = await waitForExtensionRuntime(target.webSocketDebuggerUrl, editorsExtensionId);
-            if (!verified) throw new Error("Tampermonkey Editors extension page could not be verified");
-            const result = await cdpEvaluate(target.webSocketDebuggerUrl, runtimeMessageExpression({
-                method: "connectWebSocket",
-                args: { authorization: `${this.auth}${this.echo}`, port: localPort }
-            }), 8000);
-            if (result?.lastError) throw new Error(result.lastError);
-            if (!result?.response?.ok) throw new Error(result?.response?.error || "Tampermonkey Editors did not connect");
-            await Promise.race([
-                this.connected,
-                new Promise((_, reject) => setTimeout(() => reject(new Error("Tampermonkey Editors connection timed out")), 8000))
-            ]);
-        } finally {
-            await closeTarget(port, target.id);
-        }
-    }
-
-    command(payload, timeout = 10000) {
-        if (!this.ws || this.ws.readyState !== WsSocket.OPEN) return Promise.reject(new Error("Tampermonkey Editors External API is not connected"));
-        const messageId = String(this.nextId++);
-        const message = { ...payload, messageId };
-        return new Promise((resolve, reject) => {
-            const timer = setTimeout(() => {
-                this.pending.delete(messageId);
-                reject(new Error(`Tampermonkey External API ${payload.action} timed out`));
-            }, timeout);
-            this.pending.set(messageId, { resolve, reject, timer });
-            this.ws.send(JSON.stringify(message));
-        });
-    }
-
-    options() { return this.command({ action: "options", activeUrls: [] }); }
-    list() { return this.command({ action: "list" }); }
-    get(path, ifNotModifiedSince) { return this.command({ action: "get", path, ifNotModifiedSince }); }
-    patch(path, value, lastModified) { return this.command({ action: "patch", path, value, lastModified }); }
-    async dispose() {
-        for (const pending of this.pending.values()) {
-            clearTimeout(pending.timer);
-            pending.reject(new Error("Tampermonkey External API bridge closed"));
-        }
-        this.pending.clear();
-        if (this.ws) {
-            try { this.ws.terminate(); } catch {}
-            this.ws = null;
-        }
-        await new Promise((resolve) => this.server.close(() => resolve()));
-    }
-}
-
-function randomAuthCharacter(exclude = null) {
-    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    let value;
-    do {
-        value = alphabet[crypto.randomBytes(1)[0] % alphabet.length];
-    } while (value === exclude);
-    return value;
-}
-
-function missingExternalCapabilities(allow) {
-    const supported = new Set(Array.isArray(allow) ? allow : []);
-    return REQUIRED_EXTERNAL_ACTIONS.filter((action) => !supported.has(action));
-}
-
-function assertExternalResponse(response, action) {
-    if (response?.error) throw new Error(`Tampermonkey External API ${action} failed: ${response.error.number} ${response.error.message}`);
-    return response;
-}
-
-async function withExternalApi(port, operation) {
-    const editors = await findEditorsExtension(port);
-    const bridge = new ExternalBridge();
-    try {
-        await bridge.connectEditors(port, editors.extensionId);
-        const options = assertExternalResponse(await bridge.options(), "options");
-        const missing = missingExternalCapabilities(options.allow);
-        if (missing.length) {
-            throw new Error(`Tampermonkey External userscripts API is missing required actions: ${missing.join(", ")}. A compatible Tampermonkey + Tampermonkey Editors combination is required`);
-        }
-        return await operation(bridge, { editorsExtensionId: editors.extensionId, allow: options.allow });
-    } finally {
-        await bridge.dispose();
-    }
-}
-
-function matchExternal(list, identity, label) {
-    const matches = (list || []).filter((item) => String(item.name || "") === identity.name
-        && String(item.namespace || "") === identity.namespace);
-    if (matches.length > 1) throw new Error(`multiple Tampermonkey ${label} scripts match the requested identity`);
-    return matches[0] || null;
-}
-
-function pathUuid(path) {
-    if (!path) return null;
-    try { return decodeURIComponent(String(path).split("/")[0]); } catch { return String(path).split("/")[0]; }
-}
-
-function verifyExternalCode(code, identity, label) {
+async function fastCreateScript(port, extensionId, code, identity, label = "script") {
     const actual = metadataIdentity(code);
     if (actual.name !== identity.name || actual.namespace !== identity.namespace) {
-        throw new Error(`Tampermonkey ${label} source identity does not match External API metadata`);
+        throw new Error(`Tampermonkey ${label} source identity changed before create`);
+    }
+    let createdUuid = null;
+    try {
+        return await withTampermonkeyPage(port, extensionId, async (wsUrl) => {
+            const activeBefore = exactMatches(flattenScriptItems(await loadFastTree(wsUrl, "options.scripts.userscripts")), identity);
+            const trashBefore = exactMatches(flattenScriptItems(await loadFastTree(wsUrl, "options.trash")), identity);
+            if (activeBefore.length || trashBefore.length) {
+                throw new Error(`Tampermonkey ${label} already exists in active scripts or trash; refusing create`);
+            }
+
+            const created = assertRuntimeMessage(await cdpEvaluate(wsUrl, runtimeMessageExpression({
+                method: "saveScript",
+                uuid: `bpw-${crypto.randomBytes(12).toString("hex")}`,
+                name: identity.name,
+                code,
+                new_script: true,
+                reload: false
+            })), `Tampermonkey create ${label}`);
+            if (created.installed !== true) throw new Error(`Tampermonkey create ${label} did not report installed=true`);
+            if (created.uuid) createdUuid = String(created.uuid);
+
+            const activeAfter = exactMatches(flattenScriptItems(await loadFastTree(wsUrl, "options.scripts.userscripts")), identity);
+            if (activeAfter.length !== 1) throw new Error(`Tampermonkey create ${label} did not produce exactly one active script`);
+            const script = activeAfter[0];
+            createdUuid = script.uuid;
+            if (created.uuid && String(created.uuid) !== script.uuid) {
+                throw new Error(`Tampermonkey create ${label} returned a different UUID than loadTree`);
+            }
+            const saved = await fastReadSourceOnPage(wsUrl, script.uuid);
+            if (saved !== code) throw new Error(`Tampermonkey create ${label} source verification failed`);
+
+            assertRuntimeMessage(await cdpEvaluate(wsUrl, runtimeMessageExpression({
+                method: "modifyScriptOptions",
+                uuid: script.uuid,
+                enabled: false,
+                reload: false
+            })), `Tampermonkey disable newly created ${label}`);
+            return { ...script, enabled: false, code: saved };
+        });
+    } catch (error) {
+        if (createdUuid) {
+            try { await fastDeleteScript(port, extensionId, createdUuid, identity, `${label} cleanup`); } catch {}
+        }
+        throw error;
     }
 }
 
-async function externalSnapshot(api, identity, loaderIdentity) {
-    const listed = assertExternalResponse(await api.list(), "list").list || [];
-    const formalEntry = matchExternal(listed, identity, "formal");
-    const loaderEntry = matchExternal(listed, loaderIdentity, "dev loader");
-    const formal = formalEntry ? await readExternalEntry(api, formalEntry, identity, "formal") : null;
-    const loader = loaderEntry ? await readExternalEntry(api, loaderEntry, loaderIdentity, "dev loader") : null;
-    return { formal, loader };
-}
-
-async function readExternalEntry(api, entry, identity, label) {
-    const response = assertExternalResponse(await api.get(entry.path), "get");
-    if (typeof response.value !== "string") throw new Error(`Tampermonkey External API returned no ${label} source`);
-    verifyExternalCode(response.value, identity, label);
-    return { path: entry.path, code: response.value, lastModified: response.lastModified };
-}
-
-function crossCheckIdentity(externalEntry, fastEntry, label) {
-    if (!externalEntry && !fastEntry) return;
-    if (!externalEntry || !fastEntry) throw new Error(`Tampermonkey ${label} differs between External API and internal API`);
-    const externalUuid = pathUuid(externalEntry.path);
-    if (externalUuid && externalUuid !== fastEntry.uuid) {
-        throw new Error(`Tampermonkey ${label} UUID differs between External API and internal API`);
+async function fastUpdateScript(port, extensionId, uuid, code, identity, label = "script") {
+    const actual = metadataIdentity(code);
+    if (actual.name !== identity.name || actual.namespace !== identity.namespace) {
+        throw new Error(`Tampermonkey ${label} source identity changed before update`);
     }
+    return withTampermonkeyPage(port, extensionId, async (wsUrl) => {
+        const active = flattenScriptItems(await loadFastTree(wsUrl, "options.scripts.userscripts"));
+        const byUuid = active.filter((item) => item.uuid === uuid);
+        if (byUuid.length !== 1) throw new Error(`Tampermonkey ${label} UUID is missing or ambiguous; refusing update`);
+        if (byUuid[0].name !== identity.name || byUuid[0].namespace !== identity.namespace) {
+            throw new Error(`Tampermonkey ${label} UUID identity changed; refusing update`);
+        }
+        assertRuntimeMessage(await cdpEvaluate(wsUrl, runtimeMessageExpression({
+            method: "saveScript",
+            uuid,
+            name: identity.name,
+            code,
+            reload: false
+        })), `Tampermonkey update ${label}`);
+        const saved = await fastReadSourceOnPage(wsUrl, uuid);
+        if (saved !== code) throw new Error(`Tampermonkey update ${label} source verification failed`);
+        return { ...byUuid[0], code: saved };
+    });
+}
+
+async function fastDeleteScript(port, extensionId, uuid, identity, label = "script") {
+    if (!uuid) return { deleted: false };
+    return withTampermonkeyPage(port, extensionId, async (wsUrl) => {
+        let active = flattenScriptItems(await loadFastTree(wsUrl, "options.scripts.userscripts"));
+        let trash = flattenScriptItems(await loadFastTree(wsUrl, "options.trash"));
+        const byUuid = (items) => items.filter((item) => item.uuid === uuid);
+        const matchesIdentity = (item) => item.name === identity.name && item.namespace === identity.namespace;
+        const activeByUuid = byUuid(active);
+        const trashByUuid = byUuid(trash);
+        for (const item of [...activeByUuid, ...trashByUuid]) {
+            if (!matchesIdentity(item)) throw new Error(`Tampermonkey ${label} UUID identity changed; refusing delete`);
+        }
+        if (!activeByUuid.length && !trashByUuid.length) return { deleted: false };
+        if (activeByUuid.length > 1 || trashByUuid.length > 1) throw new Error(`Tampermonkey ${label} UUID is ambiguous; refusing delete`);
+
+        if (activeByUuid.length) {
+            assertRuntimeMessage(await cdpEvaluate(wsUrl, runtimeMessageExpression({
+                method: "saveScript",
+                uuid,
+                reload: false
+            })), `Tampermonkey move ${label} to trash`);
+            active = flattenScriptItems(await loadFastTree(wsUrl, "options.scripts.userscripts"));
+            trash = flattenScriptItems(await loadFastTree(wsUrl, "options.trash"));
+            if (byUuid(active).length !== 0) throw new Error(`Tampermonkey ${label} remained active after trash transition`);
+            const moved = byUuid(trash);
+            if (moved.length !== 1 || !matchesIdentity(moved[0])) throw new Error(`Tampermonkey ${label} trash transition could not be verified`);
+        }
+
+        assertRuntimeMessage(await cdpEvaluate(wsUrl, runtimeMessageExpression({
+            method: "purgeScripts",
+            uuids: [uuid]
+        }), 12000), `Tampermonkey purge ${label}`);
+        active = flattenScriptItems(await loadFastTree(wsUrl, "options.scripts.userscripts"));
+        trash = flattenScriptItems(await loadFastTree(wsUrl, "options.trash"));
+        if (byUuid(active).length || byUuid(trash).length) throw new Error(`Tampermonkey ${label} still exists after purge`);
+        return { deleted: true };
+    });
 }
 
 async function prepare(port, sourceCode, loaderCode, identity, loaderIdentity) {
     const extension = await findTampermonkeyExtension(port);
-    const fastBefore = await fastSnapshot(port, extension.extensionId, identity, loaderIdentity);
-    return withExternalApi(port, async (api, externalInfo) => {
-        const before = await externalSnapshot(api, identity, loaderIdentity);
-        crossCheckIdentity(before.formal, fastBefore.formal, "formal script");
-        crossCheckIdentity(before.loader, fastBefore.loader, "dev loader");
+    const before = await fastSnapshot(port, extension.extensionId, identity, loaderIdentity);
+    let loaderCreated = false;
+    let loaderUpdated = false;
 
-        let loaderCreated = false;
+    try {
         if (before.loader) {
             if (before.loader.code !== loaderCode) {
-                assertExternalResponse(await api.patch(before.loader.path, loaderCode, before.loader.lastModified), "patch");
+                await fastUpdateScript(port, extension.extensionId, before.loader.uuid, loaderCode, loaderIdentity, "dev loader");
+                loaderUpdated = true;
             }
         } else {
             await fastCreateScript(port, extension.extensionId, loaderCode, loaderIdentity, "dev loader");
             loaderCreated = true;
         }
 
-        const after = await externalSnapshot(api, identity, loaderIdentity);
-        if (!after.loader) throw new Error("Tampermonkey dev loader was not found after External API update");
-        const fastAfter = await fastSnapshot(port, extension.extensionId, identity, loaderIdentity);
-        crossCheckIdentity(after.formal, fastAfter.formal, "formal script");
-        crossCheckIdentity(after.loader, fastAfter.loader, "dev loader");
-
-        try {
-            const changes = [{ uuid: fastAfter.loader.uuid, enabled: false }];
-            if (fastAfter.formal?.enabled) changes.push({ uuid: fastAfter.formal.uuid, enabled: false });
-            changes.push({ uuid: fastAfter.loader.uuid, enabled: true });
-            await setEnabledStates(port, extension.extensionId, changes);
-        } catch (error) {
-            try {
-                const rollback = [];
-                if (fastAfter.loader) rollback.push({ uuid: fastAfter.loader.uuid, enabled: false });
-                if (fastAfter.formal) rollback.push({ uuid: fastAfter.formal.uuid, enabled: fastAfter.formal.enabled });
-                await setEnabledStates(port, extension.extensionId, rollback);
-            } catch {}
-            if (loaderCreated && fastAfter.loader) {
-                try { await fastDeleteScript(port, extension.extensionId, fastAfter.loader.uuid, loaderIdentity, "dev loader"); } catch {}
-            }
-            throw error;
-        }
-
+        const after = await fastSnapshot(port, extension.extensionId, identity, loaderIdentity);
+        if (!after.loader) throw new Error("Tampermonkey dev loader was not found after Fast API update");
+        const changes = [];
+        if (after.formal?.enabled) changes.push({ uuid: after.formal.uuid, enabled: false });
+        changes.push({ uuid: after.loader.uuid, enabled: true });
+        await setEnabledStates(port, extension.extensionId, changes);
         return {
             extensionId: extension.extensionId,
             extensionVersion: extension.version,
-            editorsExtensionId: externalInfo.editorsExtensionId,
-            externalAllow: externalInfo.allow,
-            transport: "external+internal-api",
+            transport: "internal-fast-api",
             stage: "active",
             identity,
             loaderIdentity,
-            formal: fastAfter.formal && {
-                id: fastAfter.formal.uuid,
-                path: after.formal.path,
-                enabled: fastAfter.formal.enabled,
-                code: after.formal.code
+            formal: before.formal && {
+                id: before.formal.uuid,
+                enabled: before.formal.enabled,
+                code: before.formal.code
             },
             loader: {
-                id: fastAfter.loader.uuid,
-                path: after.loader.path,
+                id: after.loader.uuid,
                 created: loaderCreated
             }
         };
-    });
+    } catch (error) {
+        try {
+            const current = await fastSnapshot(port, extension.extensionId, identity, loaderIdentity);
+            if (current.loader) {
+                await setEnabledStates(port, extension.extensionId, [{ uuid: current.loader.uuid, enabled: false }]);
+                if (loaderCreated) await fastDeleteScript(port, extension.extensionId, current.loader.uuid, loaderIdentity, "dev loader");
+                else if (loaderUpdated && before.loader) await fastUpdateScript(port, extension.extensionId, current.loader.uuid, before.loader.code, loaderIdentity, "dev loader rollback");
+            }
+            if (current.formal && before.formal) {
+                await setEnabledStates(port, extension.extensionId, [{ uuid: current.formal.uuid, enabled: before.formal.enabled }]);
+            }
+        } catch {}
+        throw error;
+    }
 }
 
 async function restore(port, state) {
     const current = await fastSnapshot(port, state.extensionId, state.identity, state.loaderIdentity);
-    if (state.loader?.id && current.loader && current.loader.uuid !== state.loader.id) throw new Error("Tampermonkey dev loader UUID changed; state was not modified");
+    if (state.loader?.id && current.loader && current.loader.uuid !== state.loader.id) {
+        throw new Error("Tampermonkey dev loader UUID changed; state was not modified");
+    }
     if (state.formal) {
-        if (!current.formal || current.formal.uuid !== state.formal.id) throw new Error("Tampermonkey formal script UUID changed; state was not modified");
+        if (!current.formal || current.formal.uuid !== state.formal.id) {
+            throw new Error("Tampermonkey formal script UUID changed; state was not modified");
+        }
     }
     const changes = [];
     if (current.loader) changes.push({ uuid: current.loader.uuid, enabled: false });
-    if (current.formal) changes.push({ uuid: current.formal.uuid, enabled: state.formal.enabled });
+    if (current.formal && state.formal) changes.push({ uuid: current.formal.uuid, enabled: state.formal.enabled });
     await setEnabledStates(port, state.extensionId, changes);
-    if (state.loader?.created && state.loader.id) {
-        await fastDeleteScript(port, state.extensionId, state.loader.id, state.loaderIdentity, "dev loader");
+    if (state.loader?.created && current.loader) {
+        await fastDeleteScript(port, state.extensionId, current.loader.uuid, state.loaderIdentity, "dev loader");
     }
     return { loaderId: current.loader?.uuid || null };
 }
@@ -638,69 +410,64 @@ async function finish(port, state, sourceCode, originalCode) {
     if (identity.name !== state.identity.name || identity.namespace !== state.identity.namespace) {
         throw new Error("source @name/@namespace changed during development; formal Tampermonkey script was not updated");
     }
-    await fastSnapshot(port, state.extensionId, state.identity, state.loaderIdentity);
-    return withExternalApi(port, async (api) => {
-        let snapshot = await externalSnapshot(api, state.identity, state.loaderIdentity);
-        let formalPath = snapshot.formal?.path || null;
-        let formalCreated = false;
+
+    let formalCreated = false;
+    let formalUpdated = false;
+    let formalId = null;
+    try {
+        let current = await fastSnapshot(port, state.extensionId, state.identity, state.loaderIdentity);
         if (state.formal) {
-            if (!snapshot.formal || pathUuid(snapshot.formal.path) !== state.formal.id) {
+            if (!current.formal || current.formal.uuid !== state.formal.id) {
                 throw new Error("Tampermonkey formal script identity changed; promotion was aborted");
             }
-            if (snapshot.formal.code !== sourceCode && snapshot.formal.code !== originalCode) {
+            if (current.formal.code !== sourceCode && current.formal.code !== originalCode) {
                 throw new Error("Tampermonkey formal script changed since bpw start; promotion was aborted");
             }
-            if (snapshot.formal.code !== sourceCode) {
-                assertExternalResponse(await api.patch(snapshot.formal.path, sourceCode, snapshot.formal.lastModified), "patch");
+            formalId = current.formal.uuid;
+            if (current.formal.code !== sourceCode) {
+                await fastUpdateScript(port, state.extensionId, formalId, sourceCode, state.identity, "formal script");
+                formalUpdated = true;
             }
-        } else if (snapshot.formal) {
-            if (snapshot.formal.code !== sourceCode) throw new Error("a Tampermonkey formal script appeared during development; promotion was aborted");
         } else {
-            await fastCreateScript(port, state.extensionId, sourceCode, state.identity, "formal script");
+            if (current.formal) throw new Error("a Tampermonkey formal script appeared during development; promotion was aborted");
+            const created = await fastCreateScript(port, state.extensionId, sourceCode, state.identity, "formal script");
             formalCreated = true;
+            formalId = created.uuid;
         }
 
-        snapshot = await externalSnapshot(api, state.identity, state.loaderIdentity);
-        if (!snapshot.formal) throw new Error("Tampermonkey formal script was not found after promotion");
-        formalPath = snapshot.formal.path;
-        const fast = await fastSnapshot(port, state.extensionId, state.identity, state.loaderIdentity);
-        crossCheckIdentity(snapshot.formal, fast.formal, "formal script");
-        if (!fast.formal) throw new Error("Tampermonkey formal script is unavailable after promotion");
-        if (state.loader?.id && fast.loader && fast.loader.uuid !== state.loader.id) throw new Error("Tampermonkey dev loader UUID changed; state was not modified");
-
+        current = await fastSnapshot(port, state.extensionId, state.identity, state.loaderIdentity);
+        if (!current.formal || current.formal.uuid !== formalId) throw new Error("Tampermonkey formal script is unavailable after promotion");
+        if (state.loader?.id && current.loader && current.loader.uuid !== state.loader.id) {
+            throw new Error("Tampermonkey dev loader UUID changed; state was not modified");
+        }
+        const changes = [];
+        if (current.loader) changes.push({ uuid: current.loader.uuid, enabled: false });
+        changes.push({ uuid: current.formal.uuid, enabled: true });
+        await setEnabledStates(port, state.extensionId, changes);
+        if (state.loader?.created && current.loader) {
+            await fastDeleteScript(port, state.extensionId, current.loader.uuid, state.loaderIdentity, "dev loader");
+        }
+        return { formalId: current.formal.uuid, transport: "internal-fast-api" };
+    } catch (error) {
         try {
-            const changes = [];
-            if (fast.loader) changes.push({ uuid: fast.loader.uuid, enabled: false });
-            changes.push({ uuid: fast.formal.uuid, enabled: true });
-            await setEnabledStates(port, state.extensionId, changes);
-        } catch (error) {
-            if (formalCreated) {
-                try { await fastDeleteScript(port, state.extensionId, fast.formal.uuid, state.identity, "formal script"); } catch {}
+            if (formalCreated && formalId) {
+                await fastDeleteScript(port, state.extensionId, formalId, state.identity, "formal script rollback");
+            } else if (formalUpdated && state.formal && originalCode) {
+                await fastUpdateScript(port, state.extensionId, state.formal.id, originalCode, state.identity, "formal script rollback");
+                await setEnabledStates(port, state.extensionId, [{ uuid: state.formal.id, enabled: state.formal.enabled }]);
             }
-            throw error;
-        }
-        if (state.loader?.created && state.loader.id) {
-            await fastDeleteScript(port, state.extensionId, state.loader.id, state.loaderIdentity, "dev loader");
-        }
-        return { formalId: fast.formal.uuid, formalPath };
-    });
+        } catch {}
+        throw error;
+    }
 }
 
 module.exports = {
-    ExternalBridge,
-    EDITORS_STABLE_ID,
-    EDITORS_BUNDLED_VERSION,
-    EDITORS_BUNDLED_COMMIT,
-    REQUIRED_EXTERNAL_ACTIONS,
     TAMPERMONKEY_IDS,
-    EDITORS_IDS,
-    prepareManagedEditors,
-    validateBundledEditors,
-    missingExternalCapabilities,
     findTampermonkeyExtension,
-    findEditorsExtension,
+    fastReadSource,
     fastSnapshot,
     fastCreateScript,
+    fastUpdateScript,
     fastDeleteScript,
     prepare,
     restore,

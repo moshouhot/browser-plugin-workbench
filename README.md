@@ -162,7 +162,7 @@ BPW 会：
 3. 启动 `127.0.0.1` source server；
 4. 调用 `cent-cdp-browser`；
 5. 通过 Chrome CDP 直接创建或复用专属 target；
-6. 按显式 manager 执行 Userscript 生命周期：Violentmonkey 使用其后台 API；Tampermonkey 使用官方 External userscripts API 做 `list/get/patch`，内部 Fast API 只补 `enabled/create/delete`；任一所需能力不可用都立即报错，不回退管理页 UI；
+6. 按显式 manager 执行 Userscript 生命周期：Violentmonkey 使用其后台 API；Tampermonkey 只使用自身扩展页上下文里的内部 Fast API；接口不可用就 fail closed，不安装额外扩展，也不回退管理页 UI；
 7. 通过 CDP 直接刷新目标页；
 8. 返回 `targetId`、`targetCdpUrl`、CDP、session、source、loader 等信息。
 
@@ -170,34 +170,16 @@ BPW 会：
 
 ### Tampermonkey 后端
 
-Tampermonkey 必须显式选择 `manager: "tampermonkey"`。BPW 不使用 Dashboard UI 自动化，采用明确分工的混合后端：
+Tampermonkey 必须显式选择 `manager: "tampermonkey"`。默认主路径全部走 Tampermonkey 自己 Dashboard 使用的内部消息接口（Fast API）：
 
-- 正式脚本和 Loader 的列举/读取/源码更新：Tampermonkey Editors 转发的官方 External `userscripts` API（`list/get/patch`）；
-- 脚本状态读取/启停：Tampermonkey 自己扩展页上下文中的 `loadTree` + `modifyScriptOptions`；
-- 仅在需要新建 BPW 脚本时，使用 Dashboard 自己使用的窄内部 `saveScript(code + new_script)` 路径；创建后立即用 `loadTree` 验证真实 UUID 并置为 disabled；
-- 仅删除 BPW 本次创建的脚本：先用 `saveScript(uuid)` 移入回收站并验证，再用 `purgeScripts([uuid])` 彻底清除并再次验证；
-- 已存在正式脚本的源码绝不走私有 `saveScript` 更新，始终使用 External `patch`；
-- 启动前会同时探测两条通道，缺少任一能力就 fail closed。
+- 列脚本：`loadTree("options.scripts.userscripts")`；
+- 读取完整源码：`loadTree("options.scripts.userscripts.source", uuid)`；
+- 更新已有源码：`saveScript(uuid + code)`；
+- 新建脚本：`saveScript(code + new_script)`；创建后立即复核源码和真实 UUID，并先置为 disabled；
+- 读取/切换启用状态：`loadTree` + `modifyScriptOptions`；
+- 删除 BPW 创建的脚本：`saveScript(uuid)` 移入回收站，再 `purgeScripts([uuid])`，两步都做状态复核。
 
-Tampermonkey Editors 不要求用户手工安装，也不要求首次联网下载。BPW 仓库直接内置固定版本的官方 **Tampermonkey Editors 1.0.7** companion：
-
-```text
-vendor/tampermonkey-editors/
-```
-
-BPW 的 `ensureEditors()` 会：
-
-1. 优先复用当前 Profile 已经可用的官方 Tampermonkey Editors；
-2. 如果不存在，则校验仓库内置 companion 的版本、上游 commit、MIT 许可和 `manifest.key`；
-3. `manifest.key` 必须派生出官方白名单 ID `lieodnapokbjkkdkhdljlllmgkmdokcm`，否则立即停止；
-4. 由 `cent-cdp-browser` 在 Cent 启动时加载内置 companion；
-5. 再验证实际运行时 extension ID，之后才允许 External API 继续。
-
-内置副本固定自上游 tag `1.0.7` / commit `cabbb288f5d7b7734c4ff88a4cefef97d301c633`。BPW 不修改 Editors 业务逻辑，只在 manifest 中保留从官方 CRX3 提取并验证过的公开 `key`，使 unpacked companion 继续使用官方 ID。第三方许可证保留在 vendor 目录内。
-
-如果 Cent 已经在运行且本次启动参数中没有内置 Editors，Chrome 不能热加载新的 `--load-extension`。这种情况下 `cent-cdp-browser` 会沿用它原有的受控重启流程，让 Editors 在浏览器启动阶段加载；不要求用户去商店安装扩展。
-
-Tampermonkey 5.5.0 已满足这套混合后端：External API 提供 `list/get/patch`，Fast API 负责 `enabled/create/delete`。BPW 对私有创建/删除接口实行窄调用、精确 `uuid + @name + @namespace` 校验和操作后复核；它不是通用的私有 CRUD fallback。
+所有写操作都先核对精确 `uuid + @name + @namespace`，写后再用 `loadTree`/源码读取复核。Tampermonkey 5.5.0 已经对上述 Fast 路径完成真机验证，包括 list/get/update/create/delete/enabled 以及 `prepare → restore`、`prepare → finish` 生命周期。BPW 不再维护 Tampermonkey Editors、External `userscripts` API 或 WebSocket bridge。
 
 若使用其他 Userscript 管理器，可显式运行 `bpw start ... --manual-loader`，沿用手动安装 Loader 的流程。该模式不支持 `bpw finish` 自动回写。
 
