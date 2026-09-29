@@ -40,6 +40,7 @@ function validateBundledEditors(directory = BUNDLED_EDITORS_ROOT) {
         if (metadata.upstreamCommit !== EDITORS_BUNDLED_COMMIT) return null;
         if (manifest.name !== "Tampermonkey Editors") return null;
         if (Number(manifest.manifest_version) !== 3) return null;
+        if (manifest.update_url) return null;
         for (const required of ["background.js", "popup.html", "popup.js", "LICENSE", "3rdpartylicenses.txt"]) {
             if (!fs.existsSync(path.join(directory, required))) return null;
         }

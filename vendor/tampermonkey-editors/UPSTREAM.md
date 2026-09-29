@@ -9,6 +9,6 @@ This directory contains the official **Tampermonkey Editors 1.0.7** Chrome exten
 - Official CRX SHA-256 verified during vendoring: `9c7086a68b1e521dc11d1cb72c94ea0d8b59b9555c46fc43005eb20fa53ce58a`
 - License: MIT (`LICENSE` in this directory)
 
-The extension payload comes from the official Chrome package. BPW adds only the public `manifest.key` extracted and verified from that official CRX3 package so Chrome assigns the same official extension ID when the payload is loaded unpacked. No Tampermonkey Editors application logic is modified by BPW.
+The extension payload comes from the official Chrome package. BPW adds the public `manifest.key` extracted and verified from that official CRX3 package so Chrome assigns the same official extension ID when the payload is loaded unpacked, and removes the store `update_url` so the bundled 1.0.7 stays pinned. No Tampermonkey Editors application logic is modified by BPW.
 
 Store-only `_metadata/verified_contents.json` is intentionally not vendored because the unpacked manifest contains the added public `key` field.

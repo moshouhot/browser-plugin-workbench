@@ -24,6 +24,8 @@ const bundled = tampermonkey.validateBundledEditors();
 assert(bundled, "bundled Tampermonkey Editors failed validation");
 assert.equal(bundled.extensionId, tampermonkey.EDITORS_STABLE_ID, "bundled Tampermonkey Editors id mismatch");
 assert.equal(bundled.version, tampermonkey.EDITORS_BUNDLED_VERSION, "bundled Tampermonkey Editors version mismatch");
+const bundledManifest = JSON.parse(fs.readFileSync(path.join(bundled.path, "manifest.json"), "utf8"));
+assert.equal(bundledManifest.update_url, undefined, "bundled Tampermonkey Editors must stay pinned and must not auto-update");
 
 const source = fs.readFileSync(path.join(__dirname, "tampermonkey.js"), "utf8");
 for (const forbidden of ["CodeMirror", "querySelector", ".click(", "agent-browser", "saveScript\""]) {
