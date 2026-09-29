@@ -114,6 +114,16 @@ CLI 可以独立使用；给 Codex / ChatGPT 这类 AI 使用时，推荐再安�
 browser-plugin-workbench
 ```
 
+本仓库内的正式 Skill 源码位于：
+
+```text
+skills/browser-plugin-workbench/
+├─ SKILL.md
+└─ agents/openai.yaml
+```
+
+这份 GitHub 仓库内的 Skill 是**权威源**，与 BPW 平台代码使用同一提交和同一 Tag 发布。本机类似 `claude skills/skills/browser-plugin-workbench/` 的目录只作为多 Agent 同步/安装镜像，不作为第二份源码仓库。
+
 它只负责告诉 AI 正确工作流：
 
 ```text

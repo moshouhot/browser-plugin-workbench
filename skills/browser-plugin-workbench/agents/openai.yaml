@@ -1,0 +1,3 @@
+interface:
+  display_name: "Browser Plugin Workbench"
+  short_description: "Use the small BPW CLI to prepare a real browser-plugin dev environment, then debug directly with agent-browser."

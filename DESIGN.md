@@ -180,4 +180,5 @@ The `browser-plugin-workbench` Skill should stay thin:
 5. run `bpw finish` after successful verification, or `bpw stop` to abandon/restore.
 
 The Skill does not contain a duplicate BPW implementation.
+Its canonical source lives in this repository under `skills/browser-plugin-workbench/`; local multi-agent skill folders are deployment/sync mirrors, not an independent source of truth.
 
