@@ -23,6 +23,7 @@
     "tools/violentmonkey.js",
     "tools/start-browser.ps1",
     "targets/userscript/main.user.js",
+    "vendor/tampermonkey-editors/",
     "workbench.config.json"
   ],
   "bin": {

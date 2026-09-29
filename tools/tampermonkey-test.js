@@ -18,6 +18,12 @@ assert.deepEqual(
 assert(tampermonkey.TAMPERMONKEY_IDS.includes("dhdgffkkebhmkfjojejmpbldmpobfkfo"), "stable Tampermonkey extension id missing");
 assert(tampermonkey.EDITORS_IDS.length >= 2, "Tampermonkey Editors ids are incomplete");
 assert.equal(tampermonkey.EDITORS_STABLE_ID, "lieodnapokbjkkdkhdljlllmgkmdokcm", "stable Tampermonkey Editors id changed");
+assert.equal(tampermonkey.EDITORS_BUNDLED_VERSION, "1.0.7", "bundled Tampermonkey Editors version changed unexpectedly");
+assert.equal(tampermonkey.EDITORS_BUNDLED_COMMIT, "cabbb288f5d7b7734c4ff88a4cefef97d301c633", "bundled Tampermonkey Editors commit changed unexpectedly");
+const bundled = tampermonkey.validateBundledEditors();
+assert(bundled, "bundled Tampermonkey Editors failed validation");
+assert.equal(bundled.extensionId, tampermonkey.EDITORS_STABLE_ID, "bundled Tampermonkey Editors id mismatch");
+assert.equal(bundled.version, tampermonkey.EDITORS_BUNDLED_VERSION, "bundled Tampermonkey Editors version mismatch");
 
 const source = fs.readFileSync(path.join(__dirname, "tampermonkey.js"), "utf8");
 for (const forbidden of ["CodeMirror", "querySelector", ".click(", "agent-browser", "saveScript\""]) {
@@ -26,8 +32,11 @@ for (const forbidden of ["CodeMirror", "querySelector", ".click(", "agent-browse
 for (const required of ["loadTree", "modifyScriptOptions", "action: \"list\"", "action: \"get\"", "action: \"patch\"", "action: \"put\"", "action: \"delete\""]) {
     assert(source.includes(required), `Tampermonkey hybrid backend is missing: ${required}`);
 }
-for (const required of ["verifyEditorsCrx3", "prepareManagedEditors", "CRX3 SignedData", "manifest.key"]) {
-    assert(source.includes(required), `Tampermonkey managed Editors provisioning is missing: ${required}`);
+for (const required of ["validateBundledEditors", "prepareManagedEditors", "BUNDLED_EDITORS_ROOT", "extensionIdFromPublicKey"]) {
+    assert(source.includes(required), `Tampermonkey bundled Editors support is missing: ${required}`);
+}
+for (const forbidden of ["clients2.google.com", "downloadBuffer(", "https.get(", "Expand-Archive"]) {
+    assert.equal(source.includes(forbidden), false, `Tampermonkey runtime download path returned: ${forbidden}`);
 }
 
 function once(socket, event) {

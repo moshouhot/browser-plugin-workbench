@@ -176,16 +176,23 @@ Tampermonkey 必须显式选择 `manager: "tampermonkey"`。BPW 不使用 Dashbo
 - 脚本启停：Tampermonkey 自己扩展页上下文中的 `loadTree` + `modifyScriptOptions`；
 - 启动前会同时探测两条通道，缺少任一能力就 fail closed。
 
-Tampermonkey Editors 不要求用户手工安装。BPW 的 `ensureEditors()` 会：
+Tampermonkey Editors 不要求用户手工安装，也不要求首次联网下载。BPW 仓库直接内置固定版本的官方 **Tampermonkey Editors 1.0.7** companion：
+
+```text
+vendor/tampermonkey-editors/
+```
+
+BPW 的 `ensureEditors()` 会：
 
 1. 优先复用当前 Profile 已经可用的官方 Tampermonkey Editors；
-2. 如果不存在，则从 Google 官方扩展更新服务下载 Tampermonkey Editors CRX；
-3. 验证 CRX3 签名，并确认签名公钥派生出的扩展 ID 是官方白名单 ID `lieodnapokbjkkdkhdljlllmgkmdokcm`；
-4. 解包到 `runtime/managed/tampermonkey-editors/`，把 CRX 自带公开公钥写入 `manifest.key`，使 unpacked companion 保持同一个官方 ID；
-5. 由 `cent-cdp-browser` 在 Cent 启动时加载该 managed companion；
-6. 再验证实际运行时 extension ID，之后才允许 External API 继续。
+2. 如果不存在，则校验仓库内置 companion 的版本、上游 commit、MIT 许可和 `manifest.key`；
+3. `manifest.key` 必须派生出官方白名单 ID `lieodnapokbjkkdkhdljlllmgkmdokcm`，否则立即停止；
+4. 由 `cent-cdp-browser` 在 Cent 启动时加载内置 companion；
+5. 再验证实际运行时 extension ID，之后才允许 External API 继续。
 
-如果 Cent 已经在运行且本次启动参数中没有 managed Editors，Chrome 不能热加载新的 `--load-extension`。这种情况下 `cent-cdp-browser` 会沿用它原有的受控重启流程，让 Editors 在浏览器启动阶段加载；不要求用户去商店安装扩展。
+内置副本固定自上游 tag `1.0.7` / commit `cabbb288f5d7b7734c4ff88a4cefef97d301c633`。BPW 不修改 Editors 业务逻辑，只在 manifest 中保留从官方 CRX3 提取并验证过的公开 `key`，使 unpacked companion 继续使用官方 ID。第三方许可证保留在 vendor 目录内。
+
+如果 Cent 已经在运行且本次启动参数中没有内置 Editors，Chrome 不能热加载新的 `--load-extension`。这种情况下 `cent-cdp-browser` 会沿用它原有的受控重启流程，让 Editors 在浏览器启动阶段加载；不要求用户去商店安装扩展。
 
 完整自动生命周期仍要求 Tampermonkey External API 实际声明 `list/get/patch/put/delete`。Tampermonkey 5.5.0 只声明 `list/get/patch`，即使 Editors 已自动准备完成也会安全拒绝源码 CRUD；不会偷偷改用内部 `saveScript`。
 
