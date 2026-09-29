@@ -55,7 +55,7 @@ bpw doctor
 普通使用 / AI 自动安装，推荐安装已经验收过的稳定 Tag：
 
 ```bat
-npm install -g github:moshouhot/browser-plugin-workbench#v0.2.1
+npm install -g github:moshouhot/browser-plugin-workbench#v0.2.2
 ```
 
 然后确认：

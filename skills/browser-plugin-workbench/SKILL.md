@@ -41,7 +41,7 @@ bpw doctor
 3. If missing during normal use, install the pinned stable release:
 
 ```bat
-npm install -g github:moshouhot/browser-plugin-workbench#v0.2.1
+npm install -g github:moshouhot/browser-plugin-workbench#v0.2.2
 ```
 
 Do not install from `main` by default. No npm Registry package is currently published.
