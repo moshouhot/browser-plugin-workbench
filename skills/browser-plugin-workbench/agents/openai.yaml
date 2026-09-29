@@ -1,3 +1,12 @@
 interface:
-  display_name: "Browser Plugin Workbench"
-  short_description: "Use the small BPW CLI to prepare a real browser-plugin dev environment, then debug directly with agent-browser."
+  display_name: Browser Plugin Workbench
+  short_description: Use the small BPW CLI to prepare a real browser-plugin dev environment, then debug directly with agent-browser.
+  icon_small: assets/icon.svg
+  icon_large: assets/icon.svg
+policy:
+  products:
+  - chatgpt
+  - codex
+  - api
+  - atlas
+  allow_implicit_invocation: true
