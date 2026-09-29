@@ -26,12 +26,13 @@ BPW 不重复实现这些能力。
 
 ## CLI
 
-V0.2 只有 4 个公开命令：
+源码工作区提供以下命令：
 
 ```text
 bpw doctor
 bpw start
 bpw status
+bpw finish
 bpw stop
 ```
 
@@ -118,20 +119,30 @@ browser-plugin-workbench
 ```text
 $browser-plugin-workbench
 -> bpw doctor
--> bpw start --source ... --url ...
+-> 写一个临时 request JSON（source + url）
+-> bpw start --request runtime\start-request.json
 -> AI 直接使用 agent-browser 调试/修改/验证
--> bpw stop
+-> bpw finish（验收通过并更新正式版）或 bpw stop（放弃本次调试）
 ```
 
 Skill 不包含 BPW 的第二份实现，CLI 才是唯一执行层。
 
 ## 开始调试现有 Userscript
 
-例如：
+AI/Codex 默认使用 request 文件，避免把目标 URL 直接暴露在命令行里：
+
+```json
+{
+  "source": "D:\\project\\foo.user.js",
+  "url": "https://target.example/"
+}
+```
 
 ```bat
-bpw start --source "D:\project\foo.user.js" --url "https://target.example/"
+bpw start --request runtime\start-request.json
 ```
+
+人工终端仍兼容 `bpw start --source "..." --url "..."`，但自动化/Codex 不应把字面 URL 放进 `bpw start` 命令行；部分命令执行策略会在 CreateProcess 前误拦这种命令形状。
 
 BPW 会：
 
@@ -139,13 +150,19 @@ BPW 会：
 2. 生成独立 Dev Loader；
 3. 启动 `127.0.0.1` source server；
 4. 调用 `cent-cdp-browser`；
-5. 用 `agent-browser` 创建并 pin 一个专属 target；
-6. 返回 CDP、session、source、loader 等信息。
+5. 通过 Chrome CDP 直接创建或复用专属 target；
+6. 调用 Violentmonkey 自身后台命令安装/更新 Dev Loader、切换正式脚本与 Dev Loader；如果后台接口不可用，立即报错停止，不回退到管理页自动化；
+7. 通过 CDP 直接刷新目标页；
+8. 返回 `targetId`、`targetCdpUrl`、CDP、session、source、loader 等信息。
+
+默认要求当前 Cent Profile 中可通过 CDP 访问 Violentmonkey。BPW 在修改脚本状态前保存正式脚本源码和原启用状态。调试时只修改原始 `.user.js` 文件；Dev Loader 会从本地服务读取最新文件。
+
+若使用其他 Userscript 管理器，可显式运行 `bpw start ... --manual-loader`，沿用手动安装 Loader 的流程。该模式不支持 `bpw finish` 自动回写。
 
 然后 AI 不再通过 BPW 绕一层，而是直接使用：
 
 ```text
-agent-browser + 返回的 session/CDP
+agent-browser + 返回的 targetCdpUrl/session
 ```
 
 去完成刷新、DOM 检查、Console/Network 分析、点击、JS、截图以及针对当前 bug 的验证。
@@ -158,7 +175,7 @@ agent-browser + 返回的 session/CDP
 runtime\WorkbenchDev.user.js
 ```
 
-把它安装进 Violentmonkey/Tampermonkey 一次即可。
+默认的 Violentmonkey 流程只通过扩展自身后台命令安装或更新它，不打开管理页或 CodeMirror。后台接口不可用时 BPW 会报错停止；不会自动回退 UI。`--manual-loader` 是用户显式选择的独立模式，才需要自行安装 Loader。
 
 Loader 继承原脚本需要的 Userscript metadata，并使用独立开发身份，不覆盖正式脚本。BPW 停止后本地 server 不存在时，Loader 会安静地跳过，不在正常浏览时刷连接错误。
 
@@ -183,16 +200,23 @@ BPW_AGENT_SESSION
 CENT_CDP_SKILL
 ```
 
-CLI 的 `--source` / `--url` 优先级高于配置文件。
+CLI 的 `--request` 适合 AI/Codex；`--source` / `--url` 仍作为人工终端兼容入口。显式 CLI 参数优先级高于 request，request 优先级高于配置文件。
 
 ## 查看状态与结束
 
 ```bat
 bpw status
+bpw finish
 bpw stop
 ```
 
-`stop` 只停止经过身份验证的 BPW source server，并删除 BPW 自己的 session state。
+`finish` 将当前源文件写入原有 Violentmonkey 正式脚本，核对脚本 ID 和源码，启用正式版、关闭 Dev Loader，刷新目标页并停止本地服务。若正式脚本在调试期间被其他操作改动，BPW 拒绝覆盖，并保留会话供处理。
+
+`stop` 放弃回写，关闭 Dev Loader，恢复正式脚本调试开始前的启用状态，刷新目标页并停止本地服务。恢复失败时保留会话，可再次运行 `bpw stop`。
+
+若 BPW 进程被强制结束，下一条生命周期命令会检查 `operation.lock` 的 owner PID：活 PID 继续阻止并发操作，dead PID 的 stale lock 会自动回收，正常不需要手工删除锁文件。
+
+旧 Dev Loader 在下一次工作台调试不同源码时会收到 HTTP 409，不能误加载另一份脚本。
 
 它**不会**杀掉 Cent，也不会清 Profile/Cookie，更不会操作其他浏览器进程。
 

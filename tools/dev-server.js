@@ -2,6 +2,7 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const { ROOT, loadConfig, resolveSourcePath } = require("./config");
+const { sourceIdentity } = require("./source-identity");
 
 const CONFIG = loadConfig();
 const HOST = CONFIG.devServer?.host || "127.0.0.1";
@@ -14,6 +15,7 @@ const APP_ID = "browser-plugin-workbench";
 if (!SOURCE_RAW || !fs.existsSync(ENTRY)) {
     throw new Error(`userscript source not found: ${ENTRY}`);
 }
+const IDENTITY = sourceIdentity(ENTRY);
 
 function commonHeaders(contentType) {
     return {
@@ -61,6 +63,15 @@ const server = http.createServer((req, res) => {
     }
 
     if (url.pathname === "/userscript") {
+        try {
+            if (url.searchParams.get("identity") !== IDENTITY.token || sourceIdentity(ENTRY).token !== IDENTITY.token) {
+                send(res, 409, "Loader identity does not match this source", undefined, headOnly);
+                return;
+            }
+        } catch (error) {
+            send(res, 503, `Userscript source is temporarily unavailable: ${error.message}`, undefined, headOnly);
+            return;
+        }
         if (!CONFIG.userscript?.enabled) {
             send(res, 409, "Userscript target is disabled", undefined, headOnly);
             return;

@@ -1,6 +1,8 @@
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+const { loadConfig, resolveSourcePath } = require("./config");
+const { sourceIdentity } = require("./source-identity");
 
 const ROOT = path.resolve(__dirname, "..");
 const CONFIG = JSON.parse(fs.readFileSync(path.join(ROOT, "workbench.config.json"), "utf8"));
@@ -34,7 +36,10 @@ async function main() {
         const health = await waitForServer();
         if (!health.ok) throw new Error("healthz returned ok=false");
 
-        const scriptResponse = await fetch(`${BASE}/userscript?t=${Date.now()}`, { cache: "no-store" });
+        const token = sourceIdentity(resolveSourcePath(loadConfig())).token;
+        const staleResponse = await fetch(`${BASE}/userscript?identity=stale`, { cache: "no-store" });
+        if (staleResponse.status !== 409) throw new Error(`stale loader expected 409, got ${staleResponse.status}`);
+        const scriptResponse = await fetch(`${BASE}/userscript?identity=${token}&t=${Date.now()}`, { cache: "no-store" });
         if (scriptResponse.status !== 200) throw new Error(`/userscript HTTP ${scriptResponse.status}`);
         const source = await scriptResponse.text();
         if (!source.includes("Browser Plugin Workbench Example")) throw new Error("served userscript is not the bundled example source");

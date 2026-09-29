@@ -85,6 +85,7 @@ $State = [ordered]@{
     cdpPort = $ActualPort
     targetUrl = $Url
     agentSession = $Session
+    action = [string]$StarterResult.action
     browser = [string]$StarterResult.browser
     userData = [string]$StarterResult.user_data
     profile = [string]$StarterResult.profile
@@ -92,20 +93,4 @@ $State = [ordered]@{
 }
 $State | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $RuntimeDir "browser-session.json") -Encoding UTF8
 
-Write-Host "[workbench] opening isolated workbench tab on CDP port $ActualPort"
-& npx -y agent-browser --session $Session --cdp $ActualPort --pin-tab tab new
-if ($LASTEXITCODE -ne 0) {
-    throw "agent-browser could not create a workbench tab"
-}
-
-& npx -y agent-browser --session $Session --cdp $ActualPort --pin-tab open $Url
-if ($LASTEXITCODE -ne 0) {
-    throw "agent-browser could not open target URL: $Url"
-}
-
-$CurrentUrl = (& npx -y agent-browser --session $Session --cdp $ActualPort --pin-tab get url | Out-String).Trim()
-if ($LASTEXITCODE -ne 0 -or -not $CurrentUrl) {
-    throw "agent-browser could not read the target tab URL"
-}
-
-Write-Host "[workbench] TARGET TAB READY: $CurrentUrl"
+Write-Host "[workbench] CDP READY: $ActualPort"

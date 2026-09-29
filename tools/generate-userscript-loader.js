@@ -1,6 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { ROOT, loadConfig, resolveSourcePath } = require("./config");
+const { sourceIdentity } = require("./source-identity");
 const RUNTIME_DIR = path.join(ROOT, "runtime");
 const OUTPUT_PATH = path.join(RUNTIME_DIR, "WorkbenchDev.user.js");
 
@@ -102,13 +103,14 @@ function buildLoader(config) {
     const { source } = readSource(config);
     const metadata = transformMetadata(parseMetadata(source), config).join("\n");
     const port = Number(config.devServer.port);
+    const identity = sourceIdentity(resolveSourcePath(config));
 
     return `${metadata}
 
 (function () {
     "use strict";
 
-    const url = "http://127.0.0.1:${port}/userscript?t=" + Date.now();
+    const url = "http://127.0.0.1:${port}/userscript?identity=${identity.token}&t=" + Date.now();
 
     GM_xmlhttpRequest({
         method: "GET",
@@ -144,7 +146,7 @@ function main() {
     fs.writeFileSync(OUTPUT_PATH, buildLoader(config), "utf8");
     console.log(`[workbench] source: ${sourcePath}`);
     console.log(`[workbench] generated: ${OUTPUT_PATH}`);
-    console.log("[workbench] install this loader once in Violentmonkey/Tampermonkey");
+    console.log("[workbench] loader ready for Violentmonkey automation or manual installation");
 }
 
 if (require.main === module) main();

@@ -1,4 +1,5 @@
 const fs = require("node:fs");
+const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
@@ -7,9 +8,11 @@ const ROOT = path.resolve(__dirname, "..");
 const BPW = path.join(ROOT, "bin", "bpw.js");
 const CONTROL = path.join(ROOT, "tools", "dev-server-control.js");
 const LOADER = path.join(ROOT, "tools", "generate-userscript-loader.js");
+const { sourceIdentity } = require("./source-identity");
 const RUNTIME = path.join(ROOT, "runtime");
 const SERVER_STATE = path.join(RUNTIME, "dev-server.json");
 const BROWSER_STATE = path.join(RUNTIME, "browser-session.json");
+const OPERATION_LOCK = path.join(RUNTIME, "operation.lock");
 
 function assert(condition, message) {
     if (!condition) throw new Error(message);
@@ -35,17 +38,26 @@ function randomPort() {
 
 function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
+function getStatusFreshConnection(url) {
+    return new Promise((resolve, reject) => {
+        const req = http.get(url, { agent: false, timeout: 2000 }, (res) => {
+            res.resume();
+            res.on("end", () => resolve(res.statusCode));
+        });
+        req.on("timeout", () => req.destroy(new Error(`request timed out: ${url}`)));
+        req.on("error", reject);
+    });
+}
+
 function testPowerShellUtf8Bridge() {
     if (process.platform !== "win32") return;
 
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), `bpw-utf8-${process.pid}-`));
     const skillRoot = path.join(tempRoot, "cent-cdp-browser");
     const scriptsDir = path.join(skillRoot, "scripts");
-    const fakeBin = path.join(tempRoot, "bin");
     const previousBrowserState = fs.existsSync(BROWSER_STATE) ? fs.readFileSync(BROWSER_STATE) : null;
 
     fs.mkdirSync(scriptsDir, { recursive: true });
-    fs.mkdirSync(fakeBin, { recursive: true });
     fs.writeFileSync(path.join(scriptsDir, "start_cent_cdp.py"), [
         "import json",
         "print(json.dumps({",
@@ -58,13 +70,10 @@ function testPowerShellUtf8Bridge() {
         "    'pages': [{'title': '暴力猴'}]",
         "}, ensure_ascii=False))"
     ].join("\n"), "utf8");
-    fs.writeFileSync(path.join(fakeBin, "npx.cmd"), "@echo off\r\necho https://example.com/\r\nexit /b 0\r\n", "utf8");
-
     const env = {
         ...process.env,
         CENT_CDP_SKILL: skillRoot,
-        PYTHONUTF8: "1",
-        PATH: `${fakeBin};${process.env.PATH || ""}`
+        PYTHONUTF8: "1"
     };
     delete env.PYTHONIOENCODING;
 
@@ -77,7 +86,9 @@ function testPowerShellUtf8Bridge() {
             "-Port", "9222",
             "-Session", "bpw-utf8-test"
         ], env);
-        assert(output.includes("TARGET TAB READY: https://example.com/"), "PowerShell/Python UTF-8 bridge failed on non-ASCII JSON");
+        assert(output.includes("CDP READY: 9222"), "PowerShell/Python UTF-8 bridge failed on non-ASCII JSON");
+        const browserState = JSON.parse(fs.readFileSync(BROWSER_STATE, "utf8").replace(/^\uFEFF/, ""));
+        assert(browserState.browser === "浏览器.exe", "PowerShell/Python UTF-8 bridge lost non-ASCII browser data");
     } finally {
         fs.rmSync(tempRoot, { recursive: true, force: true });
         if (previousBrowserState) fs.writeFileSync(BROWSER_STATE, previousBrowserState);
@@ -88,13 +99,55 @@ function testPowerShellUtf8Bridge() {
 async function main() {
     const help = run(process.execPath, [BPW, "--help"]);
     assert(help.includes("bpw doctor"), "CLI help missing doctor");
+    assert(help.includes("--request <json>"), "CLI help missing request-file start path");
     assert(!help.includes("bpw inspect"), "lean CLI unexpectedly exposes inspect");
 
     const doctor = run(process.execPath, [BPW, "doctor", "--json"]);
     const doctorJson = JSON.parse(doctor);
     assert(["READY", "READY_WITH_WARNING"].includes(doctorJson.status), "doctor should accept bundled example");
 
+    const requestFile = path.join(os.tmpdir(), `bpw-request-${process.pid}.json`);
+    const requestSource = path.join(os.tmpdir(), `bpw-request-missing-${process.pid}.user.js`);
+    fs.writeFileSync(requestFile, JSON.stringify({ source: requestSource, url: "https://example.com/" }), "utf8");
+    try {
+        const requestOutput = run(process.execPath, [BPW, "start", "--request", requestFile], process.env, 1);
+        assert(requestOutput.includes(`userscript source not found: ${requestSource}`), "request-file source/url were not applied before start");
+    } finally {
+        fs.rmSync(requestFile, { force: true });
+    }
+
     testPowerShellUtf8Bridge();
+
+    fs.mkdirSync(RUNTIME, { recursive: true });
+    assert(!fs.existsSync(OPERATION_LOCK), "test requires no active BPW operation");
+    const liveOwner = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", windowsHide: true });
+    await wait(150);
+    fs.writeFileSync(OPERATION_LOCK, JSON.stringify({
+        pid: liveOwner.pid,
+        operation: "start",
+        startedAt: new Date().toISOString(),
+        token: "live-lock-test"
+    }), { flag: "wx" });
+    try {
+        const blocked = run(process.execPath, [BPW, "stop"], process.env, 1);
+        assert(blocked.includes("another BPW operation"), "concurrent lifecycle operation was not rejected");
+        assert(blocked.includes(`pid ${liveOwner.pid}`), "lock rejection did not identify the live owner");
+    } finally {
+        liveOwner.kill();
+        fs.rmSync(OPERATION_LOCK, { force: true });
+    }
+
+    const deadOwner = spawn(process.execPath, ["-e", "process.exit(0)"], { stdio: "ignore", windowsHide: true });
+    await new Promise((resolve) => deadOwner.once("exit", resolve));
+    fs.writeFileSync(OPERATION_LOCK, JSON.stringify({
+        pid: deadOwner.pid,
+        operation: "start",
+        startedAt: new Date().toISOString(),
+        token: "stale-lock-test"
+    }), { flag: "wx" });
+    const recovered = run(process.execPath, [BPW, "stop"]);
+    assert(recovered.includes("status: STOPPED"), "stale lifecycle lock was not reclaimed automatically");
+    assert(!fs.existsSync(OPERATION_LOCK), "stale lifecycle lock remained after recovery");
 
     const override = tempUserscript("Override Source");
     const overrideEnv = { ...process.env, BPW_SOURCE: override };
@@ -119,8 +172,29 @@ async function main() {
 
         const stillAlive = await fetch(`http://127.0.0.1:${port}/healthz`).then((r) => r.json());
         assert(Number(stillAlive.pid) === Number(health.pid), "mismatch start disturbed the existing server");
+
+        const token = sourceIdentity(sourceA).token;
+        const unavailable = `${sourceA}.temporarily-missing`;
+        fs.renameSync(sourceA, unavailable);
+        try {
+            const response = await fetch(`http://127.0.0.1:${port}/userscript?identity=${token}`);
+            assert(response.status === 503, "temporary source disappearance should return 503");
+            const after = await fetch(`http://127.0.0.1:${port}/healthz`).then((r) => r.json());
+            assert(after.pid === health.pid, "temporary source disappearance killed dev server");
+        } finally {
+            fs.renameSync(unavailable, sourceA);
+        }
     } finally {
         run(process.execPath, [CONTROL, "stop"], envA);
+    }
+
+    run(process.execPath, [CONTROL, "start"], envB);
+    try {
+        const oldToken = sourceIdentity(sourceA).token;
+        const status = await getStatusFreshConnection(`http://127.0.0.1:${port}/userscript?identity=${oldToken}`);
+        assert(status === 409, "old loader accepted a different source on the same port");
+    } finally {
+        run(process.execPath, [CONTROL, "stop"], envB);
     }
 
     const sleeper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", windowsHide: true });
